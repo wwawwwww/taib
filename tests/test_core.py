@@ -200,7 +200,8 @@ class CoreBehaviorTests(unittest.TestCase):
             self.assertEqual(imported, 2)
             self.assertEqual(skipped, 1)
             self.assertIn("Первый старый пост", recent)
-            self.assertIn("Второй пост", context)
+            self.assertIn("Профиль стиля базы канала", context)
+            self.assertIn("второй пост", context)
 
     def test_import_channel_history_from_telegram_html_directory(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -263,8 +264,35 @@ class CoreBehaviorTests(unittest.TestCase):
             self.assertEqual(second_imported, 1)
             self.assertNotIn("Старый голос канала", recent)
             self.assertIn("Новая база канала", recent)
-            self.assertNotIn("Старый голос канала", context)
-            self.assertIn("Новая база канала", context)
+            self.assertNotIn("старый голос канала", context.lower())
+            self.assertIn("новая база канала", context.lower())
+
+    def test_autogen_prompt_uses_style_profile_not_raw_imported_posts_as_examples(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            history = root / "posts.jsonl"
+            memory = root / "memory.json"
+            export = root / "export.json"
+            export.write_text(
+                '{"messages":[{"text":"Леон сделал тату. Я кинул ему ножик за три тыщи."}]}',
+                encoding="utf-8",
+            )
+
+            with patch.object(core, "HISTORY_PATH", history), patch.object(core, "MEMORY_PATH", memory):
+                core.import_channel_history(export)
+                settings = make_settings(root)
+                prompt = core.make_generation_input(
+                    settings,
+                    editorial_prompt="",
+                    recent_posts=[],
+                    activity_context="Свободный пост без файлового контекста.",
+                    mode="autopilot",
+                )
+
+            self.assertIn("Профиль стиля базы канала", prompt)
+            self.assertIn("Новый смысловой импульс", prompt)
+            self.assertNotIn("Примеры недавних постов канала", prompt)
+            self.assertNotIn("Леон сделал тату. Я кинул ему ножик за три тыщи.", prompt)
 
     def test_posts_stats_ignores_channel_basis_posts(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -355,9 +355,11 @@ def default_memory() -> dict[str, Any]:
     return {
         "topics": {},
         "recent_posts": [],
+        "style_profile": {},
         "style_notes": [
             "Писать от первого лица, живо и без упоминания автоматизации.",
             "Не начинать каждый пост одинаково.",
+            "База канала задает манеру письма, но не темы для прямого пересказа.",
         ],
     }
 
@@ -416,11 +418,114 @@ def update_memory(text: str, kind: str, topic: str | None = None) -> None:
     write_memory(memory)
 
 
+def published_history_items() -> list[dict[str, Any]]:
+    return [
+        item
+        for item in history_items()
+        if str(item.get("kind", "")) not in CHANNEL_BASIS_KINDS
+    ]
+
+
+def read_recent_published_posts(limit: int = 8) -> list[str]:
+    posts: list[str] = []
+    for item in published_history_items()[-limit:]:
+        text = item.get("text")
+        if isinstance(text, str) and text.strip():
+            posts.append(text.strip())
+    return posts
+
+
+def top_items(values: list[str], limit: int = 12) -> list[str]:
+    counts: dict[str, int] = {}
+    for value in values:
+        value = value.strip()
+        if not value:
+            continue
+        counts[value] = counts.get(value, 0) + 1
+    return [value for value, _count in sorted(counts.items(), key=lambda item: (-item[1], item[0]))[:limit]]
+
+
+def sentence_fragments(text: str) -> list[str]:
+    fragments = re.split(r"[.!?…\n]+", text)
+    return [fragment.strip() for fragment in fragments if 6 <= len(fragment.strip()) <= 80]
+
+
+def build_style_profile(posts: list[str]) -> dict[str, Any]:
+    clean_posts = [post.strip() for post in posts if post.strip()]
+    if not clean_posts:
+        return {}
+
+    joined = "\n".join(clean_posts)
+    lengths = [len(post) for post in clean_posts]
+    paragraph_counts = [max(1, len([part for part in post.split("\n\n") if part.strip()])) for post in clean_posts]
+    line_counts = [max(1, len([part for part in post.splitlines() if part.strip()])) for post in clean_posts]
+    words = re.findall(r"[A-Za-zА-Яа-яЁё][A-Za-zА-Яа-яЁё0-9_+-]{2,}", joined)
+    slang = [
+        word
+        for word in words
+        if len(word) <= 14 and word.lower() not in {
+            "это", "что", "как", "для", "или", "если", "там", "тут", "вот", "уже", "ещё", "еще",
+            "the", "and", "for", "you", "this", "that",
+        }
+    ]
+    emoji = re.findall(r"[\U0001F300-\U0001FAFF\u2600-\u27BF]", joined)
+    hashtags = re.findall(r"#[\wА-Яа-яЁё_]+", joined)
+    mentions = re.findall(r"@[A-Za-z0-9_]+", joined)
+    punctuation = {
+        "...": joined.count("..."),
+        "…": joined.count("…"),
+        "!": joined.count("!"),
+        "?": joined.count("?"),
+        "—": joined.count("—"),
+        "-": joined.count("-"),
+        ":": joined.count(":"),
+        ";": joined.count(";"),
+    }
+    uppercase_words = re.findall(r"\b[A-ZА-ЯЁ]{2,}\b", joined)
+    first_person_markers = re.findall(r"\b(?:я|мне|меня|мой|моя|мои|у меня|думаю|кажется)\b", joined.lower())
+    openers = top_items([post.splitlines()[0][:80] for post in clean_posts if post.splitlines()], limit=8)
+    endings = top_items([post.splitlines()[-1][:80] for post in clean_posts if post.splitlines()], limit=8)
+    fragments = top_items([fragment.lower() for post in clean_posts for fragment in sentence_fragments(post)], limit=16)
+
+    return {
+        "posts_analyzed": len(clean_posts),
+        "avg_chars": round(sum(lengths) / len(lengths)),
+        "min_chars": min(lengths),
+        "max_chars": max(lengths),
+        "avg_paragraphs": round(sum(paragraph_counts) / len(paragraph_counts), 1),
+        "avg_lines": round(sum(line_counts) / len(line_counts), 1),
+        "keywords": keyword_candidates(joined, limit=28),
+        "signature_words": top_items([word.lower() for word in slang], limit=24),
+        "emoji": top_items(emoji, limit=16),
+        "hashtags": top_items(hashtags, limit=12),
+        "mentions": top_items(mentions, limit=12),
+        "punctuation": punctuation,
+        "uppercase_words": top_items(uppercase_words, limit=12),
+        "first_person_density": round(len(first_person_markers) / max(1, len(words)), 3),
+        "typical_openers": openers,
+        "typical_endings": endings,
+        "avoid_fragments": fragments,
+    }
+
+
+def install_channel_style_profile(posts: list[str]) -> None:
+    memory = default_memory()
+    profile = build_style_profile(posts)
+    memory["style_profile"] = profile
+
+    topics = memory.setdefault("topics", {})
+    for key in profile.get("keywords", [])[:20]:
+        topics[key] = {"count": 1, "last_seen": datetime.now().isoformat(timespec="seconds")}
+
+    write_memory(memory)
+
+
 def memory_context() -> str:
     memory = read_memory()
     topics = memory.get("topics", {})
     recent_posts = memory.get("recent_posts", [])
     style_notes = memory.get("style_notes", [])
+    style_profile = memory.get("style_profile", {})
 
     topic_lines: list[str] = []
     if isinstance(topics, dict):
@@ -444,35 +549,86 @@ def memory_context() -> str:
             recent_lines.append(f"- {item.get('created_at', '')} | {item.get('kind', '')} | {topic} | {keywords} | {excerpt}")
 
     style_block = "\n".join(f"- {note}" for note in style_notes) if style_notes else "- нет"
+    profile_block = style_profile_context(style_profile if isinstance(style_profile, dict) else {})
     topics_block = "\n".join(topic_lines) if topic_lines else "- пока нет"
     recent_block = "\n".join(recent_lines) if recent_lines else "- пока нет"
     return (
         "Локальная память канала:\n\n"
         f"Стилевые заметки:\n{style_block}\n\n"
+        f"{profile_block}\n\n"
         f"Частые темы:\n{topics_block}\n\n"
         f"Последние смысловые следы постов:\n{recent_block}"
     )
 
 
-def style_reference_context(preferred_kinds: tuple[str, ...] = ("imported", "channel"), limit: int = 12) -> str:
-    items = history_items(preferred_kinds)
-    texts: list[str] = []
-    for item in items[-limit:]:
-        text = item.get("text")
-        if isinstance(text, str) and text.strip():
-            texts.append(text.strip())
-    if not texts:
-        return "Истории канала пока нет."
+def style_profile_context(profile: dict[str, Any]) -> str:
+    if not profile:
+        return "Профиль стиля: пока нет."
 
-    keyword_source = "\n".join(texts[-8:])
-    keywords = keyword_candidates(keyword_source, limit=20)
-    keywords_block = ", ".join(keywords) if keywords else "(нет)"
-    posts_block = "\n\n---\n\n".join(texts[-6:])
-    return (
-        "Опорная история канала:\n"
-        f"Ключевые слова и ходы: {keywords_block}\n\n"
-        f"Примеры недавних постов канала:\n{posts_block}"
-    )
+    punctuation = profile.get("punctuation", {})
+    if isinstance(punctuation, dict):
+        punctuation_block = ", ".join(
+            f"{mark}={count}"
+            for mark, count in punctuation.items()
+            if isinstance(count, int) and count > 0
+        ) or "без ярких пунктуационных маркеров"
+    else:
+        punctuation_block = "без данных"
+
+    def list_field(name: str, limit: int = 14) -> str:
+        value = profile.get(name, [])
+        if isinstance(value, list):
+            return ", ".join(str(item) for item in value[:limit]) or "нет"
+        return "нет"
+
+    return textwrap.dedent(
+        f"""
+        Профиль стиля базы канала:
+        - Проанализировано постов: {profile.get("posts_analyzed", 0)}
+        - Типичная длина: около {profile.get("avg_chars", "?")} символов; диапазон {profile.get("min_chars", "?")}-{profile.get("max_chars", "?")}
+        - Абзацы/строки: {profile.get("avg_paragraphs", "?")} абз., {profile.get("avg_lines", "?")} строк
+        - Пунктуация: {punctuation_block}
+        - Слова и сленг, которые можно аккуратно использовать: {list_field("signature_words")}
+        - Частые тематические поля: {list_field("keywords")}
+        - Эмодзи/хэштеги/упоминания: {list_field("emoji", 10)} | {list_field("hashtags", 8)} | {list_field("mentions", 8)}
+        - Регистр/капс: {list_field("uppercase_words", 8)}
+        - Плотность первого лица: {profile.get("first_person_density", "?")}
+        - Не повторять узнаваемые старые фрагменты: {list_field("avoid_fragments", 10)}
+        """
+    ).strip()
+
+
+def style_reference_context(preferred_kinds: tuple[str, ...] = ("imported", "channel"), limit: int = 12) -> str:
+    memory = read_memory()
+    profile = memory.get("style_profile", {})
+    own_posts = read_recent_published_posts(limit=limit)
+    anti_repeat = "\n".join(f"- {post[:260].replace(chr(10), ' ')}" for post in own_posts[-6:])
+    if not profile and not own_posts:
+        return "Базы канала пока нет."
+    return textwrap.dedent(
+        f"""
+        База канала нужна только для переноса манеры, а не для пересказа старых тем.
+
+        {style_profile_context(profile if isinstance(profile, dict) else {})}
+
+        Недавние посты, которые уже написал бот. Их нельзя повторять по теме и формулировкам:
+        {anti_repeat or "- пока нет"}
+        """
+    ).strip()
+
+
+def novelty_seed() -> str:
+    seeds = [
+        "наблюдение о повседневной детали",
+        "короткая личная мысль без вывода морали",
+        "реакция на случайную новость или разговор",
+        "маленький конфликт ожидания и реальности",
+        "заметка про людей, привычки или интернет",
+        "ироничная фиксация странного момента дня",
+        "спокойная мысль, которую не надо доказывать",
+        "резкая, но короткая оценка ситуации",
+    ]
+    return random.choice(seeds)
 
 
 def flatten_message_text(value: Any) -> str:
@@ -631,6 +787,7 @@ def import_channel_history(path: Path, replace: bool = True) -> tuple[int, int]:
     if replace:
         reset_channel_basis()
     existing: set[str] = set()
+    imported_posts: list[str] = []
     imported = 0
     skipped = 0
     for source in sources:
@@ -646,9 +803,10 @@ def import_channel_history(path: Path, replace: bool = True) -> tuple[int, int]:
                 skipped += 1
                 continue
             append_history(normalized, kind="imported")
-            update_memory(normalized, kind="imported")
             existing.add(normalized)
+            imported_posts.append(normalized)
             imported += 1
+    install_channel_style_profile(imported_posts)
     return imported, skipped
 
 
@@ -662,6 +820,7 @@ def make_generation_input(
     recent_block = "\n\n---\n\n".join(recent_posts) if recent_posts else "Истории пока нет."
     memory_block = memory_context()
     style_block = style_reference_context()
+    seed = novelty_seed()
     today = datetime.now().strftime("%Y-%m-%d")
     if mode == "free":
         return textwrap.dedent(
@@ -673,13 +832,16 @@ def make_generation_input(
             {style_block}
 
             Режим: свободный авторский пост.
-            История канала выше - это главный ориентир. Держись ее манеры, длины, ритма, резкости или разговорности максимально близко.
-            Не уходи в программирование, Scala, AI, рабочие заметки или инженерные темы, если этого нет в истории канала.
-            Напиши короткий живой пост от первого лица, будто мысль сама дозрела и захотелось ей поделиться в уже существующий канал.
-            Возьми один мотив, одну новость, одну реакцию или один тип шутки. Не склеивай несколько старых постов в один.
+            Новый смысловой импульс: {seed}.
+            Скопируй манеру: длину, ритм, пунктуацию, регистр, сленг, степень резкости, способ начинать и заканчивать мысль.
+            Не копируй содержание базы канала. Старые посты - только материал для анализа голоса.
+            Не развивай снова конкретные сюжеты, имена, покупки, события и выводы из базы, если они не появились в новом импульсе.
+            Не уходи в программирование, Scala, AI, рабочие заметки или инженерные темы, если это не естественная часть стиля канала.
+            Напиши короткий живой пост от первого лица, будто мысль сама дозрела и захотелось ей поделиться.
+            Возьми один новый мотив, одну новую реакцию или один новый тип шутки. Не склеивай несколько старых постов в один.
             Не выдумывай конкретную сегодняшнюю работу, баги, тесты, задачи или файлы.
             Не упоминай файлы, сканирование, бота, модель, автоматизацию, отчетность или то, что пост был сгенерирован.
-            Не копируй старые посты дословно, но будь максимально близок по голосу и типу мыслей.
+            Нельзя использовать узнаваемые фразы или последовательности идей из базы. Если фраза выглядит как цитата из старого поста - перепридумай ее.
             Верни только текст поста, без пояснений.
             """
         ).strip()
@@ -717,14 +879,16 @@ def make_generation_input(
             {style_block}
 
             Режим: автоведение канала.
-            История канала выше - главный источник голоса. Пиши так, будто это естественное продолжение уже существующего канала.
-            Максимально воспроизводи тон, ритм, тип подачи, длину абзацев, словарь и общий вайб канала, но не копируй старые посты дословно.
-            Если в истории канала нет кода, разработки, AI или учебных заметок - не тащи эти темы в новый пост.
-            Напиши самостоятельный пост в манере канала, опираясь на локальную память, частые темы и последние смысловые следы.
-            Выбери одну тему, один сюжет или один эмоциональный угол. Не делай подборку и не склеивай несколько разных постов в один.
+            Новый смысловой импульс: {seed}.
+            Пиши так, будто это естественное продолжение уже существующего канала.
+            Главная задача - перенести манеру: тон, ритм, тип подачи, длину абзацев, словарь, пунктуацию, регистр, сленг и общий вайб.
+            Вторая задача - придумать новый самостоятельный повод для поста, а не пересобрать старые посты по кускам.
+            Если в базе канала нет кода, разработки, AI или учебных заметок - не тащи эти темы в новый пост.
+            Выбери одну новую тему, один сюжет или один эмоциональный угол. Не делай подборку и не склеивай несколько разных постов в один.
             Пост должен выглядеть так, будто автор сам решил написать мысль, а не будто система выполняет расписание.
             Не упоминай автоведение, память, историю, бота, модель, файлы, автоматизацию или то, что ты имитируешь стиль.
-            Не копируй старые посты; продолжай линию канала новым, максимально органичным постом.
+            Нельзя повторять имена, события, покупки, выводы, шутки и связки из базы, если это не неизбежная часть стиля.
+            Нельзя использовать узнаваемые старые фрагменты; продолжай линию канала новым, максимально органичным постом.
             Верни только текст поста, без пояснений.
             """
         ).strip()
@@ -1440,7 +1604,7 @@ def legacy_extract_response_text(response: dict[str, Any]) -> str:
 def generate_post(settings: Settings, mode: str = "activity", topic: str | None = None) -> str:
     editorial_prompt = read_prompt()
     if mode in {"free", "autopilot"}:
-        recent_posts = read_recent_posts(limit=12, preferred_kinds=("imported", "channel", "autopilot", "free", "topic", "manual"))
+        recent_posts = read_recent_published_posts(limit=10)
     else:
         recent_posts = read_recent_posts()
     if mode == "activity":
