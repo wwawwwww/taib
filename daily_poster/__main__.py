@@ -146,6 +146,7 @@ class Settings:
     activity_max_total_chars: int
     spontaneous_enabled: bool
     spontaneous_min_pause_minutes: int
+    spontaneous_check_interval_minutes: int
     autopilot_enabled: bool
     autopilot_posts_per_day: int
     autopilot_min_pause_minutes: int
@@ -201,6 +202,9 @@ def get_settings() -> Settings:
                 str(int(os.environ.get("SPONTANEOUS_MIN_PAUSE_HOURS", "6")) * 60),
             )
         )
+        spontaneous_check_interval_minutes = int(
+            os.environ.get("SPONTANEOUS_CHECK_INTERVAL_MINUTES", "60")
+        )
         autopilot_posts_per_day = int(os.environ.get("AUTOPILOT_POSTS_PER_DAY", "2"))
         autopilot_min_pause_minutes = int(
             os.environ.get(
@@ -233,6 +237,7 @@ def get_settings() -> Settings:
         activity_max_total_chars=activity_max_total_chars,
         spontaneous_enabled=spontaneous_enabled,
         spontaneous_min_pause_minutes=spontaneous_min_pause_minutes,
+        spontaneous_check_interval_minutes=spontaneous_check_interval_minutes,
         autopilot_enabled=autopilot_enabled,
         autopilot_posts_per_day=autopilot_posts_per_day,
         autopilot_min_pause_minutes=autopilot_min_pause_minutes,
@@ -1458,6 +1463,7 @@ def command_env_check() -> int:
     print(f"Last post checkpoint: {checkpoint_label()}")
     print(f"Spontaneous enabled: {settings.spontaneous_enabled}")
     print(f"Spontaneous min pause minutes: {settings.spontaneous_min_pause_minutes}")
+    print(f"Spontaneous check interval minutes: {settings.spontaneous_check_interval_minutes}")
     print(f"Minutes since last post: {minutes_since_last_post():.1f}")
     return 0
 
@@ -1508,7 +1514,10 @@ def command_doctor() -> int:
     print(f"Channel: {settings.telegram_chat_id}")
     print(f"Checkpoint: {checkpoint_label()}")
     print(f"Last post age: {minutes_since_last_post():.1f} min")
-    print(f"Spontaneous: {settings.spontaneous_enabled}, min pause {settings.spontaneous_min_pause_minutes} min")
+    print(
+        f"Spontaneous: {settings.spontaneous_enabled}, min pause {settings.spontaneous_min_pause_minutes} min, "
+        f"check interval {settings.spontaneous_check_interval_minutes} min"
+    )
     print(activity_digest(settings))
 
     if problems:

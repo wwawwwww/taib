@@ -347,6 +347,10 @@ class TgAutoTui:
             self.prompt(stdscr, f"Разрешить спонтанные проверки true/false [{env.get('SPONTANEOUS_ENABLED', 'true')}]: ")
             or env.get("SPONTANEOUS_ENABLED", "true")
         )
+        env["SPONTANEOUS_CHECK_INTERVAL_MINUTES"] = (
+            self.prompt(stdscr, f"Как часто запускать проверку, минуты [{env.get('SPONTANEOUS_CHECK_INTERVAL_MINUTES', '60')}]: ")
+            or env.get("SPONTANEOUS_CHECK_INTERVAL_MINUTES", "60")
+        )
         env["SPONTANEOUS_MIN_PAUSE_MINUTES"] = (
             self.prompt(stdscr, f"Минимальная пауза для maybe-post, минуты [{env.get('SPONTANEOUS_MIN_PAUSE_MINUTES', '360')}]: ")
             or env.get("SPONTANEOUS_MIN_PAUSE_MINUTES", "360")
@@ -436,6 +440,7 @@ class TgAutoTui:
             ("OPENAI_MODEL", "Модель OpenAI", False),
             ("ACTIVE_MODE", "Режим продукта: tracking или autogen", False),
             ("ACTIVITY_SCAN_ROOTS", "Папки для отслеживания через запятую", False),
+            ("SPONTANEOUS_CHECK_INTERVAL_MINUTES", "Как часто запускать проверку, минуты", False),
             ("SPONTANEOUS_MIN_PAUSE_MINUTES", "Минимальная пауза между любыми постами, минуты", False),
             ("AUTOPILOT_ENABLED", "Автоведение канала включено? true/false", False),
             ("AUTOPILOT_POSTS_PER_DAY", "Сколько автопостов максимум в день", False),
@@ -445,6 +450,7 @@ class TgAutoTui:
             "OPENAI_MODEL": "gpt-5-mini",
             "ACTIVE_MODE": "tracking",
             "ACTIVITY_SCAN_ROOTS": core.DEFAULT_SCAN_ROOTS,
+            "SPONTANEOUS_CHECK_INTERVAL_MINUTES": "60",
             "SPONTANEOUS_MIN_PAUSE_MINUTES": "360",
             "AUTOPILOT_ENABLED": "false",
             "AUTOPILOT_POSTS_PER_DAY": "2",
@@ -904,6 +910,7 @@ def write_env(values: dict[str, str]) -> None:
         "POST_MAX_CHARS",
         "POST_TEMPERATURE",
         "SPONTANEOUS_ENABLED",
+        "SPONTANEOUS_CHECK_INTERVAL_MINUTES",
         "SPONTANEOUS_MIN_PAUSE_MINUTES",
         "AUTOPILOT_ENABLED",
         "AUTOPILOT_POSTS_PER_DAY",
@@ -921,6 +928,7 @@ def write_env(values: dict[str, str]) -> None:
         "POST_MAX_CHARS": "3500",
         "POST_TEMPERATURE": "0.8",
         "SPONTANEOUS_ENABLED": "true",
+        "SPONTANEOUS_CHECK_INTERVAL_MINUTES": "60",
         "SPONTANEOUS_MIN_PAUSE_MINUTES": "360",
         "AUTOPILOT_ENABLED": "false",
         "AUTOPILOT_POSTS_PER_DAY": "2",
@@ -945,7 +953,7 @@ def write_env(values: dict[str, str]) -> None:
     for key in ("POST_LANGUAGE", "POST_MAX_CHARS", "POST_TEMPERATURE"):
         lines.append(f"{key}={merged.get(key, '')}")
     lines.extend(["", "# Spontaneous posting"])
-    for key in ("SPONTANEOUS_ENABLED", "SPONTANEOUS_MIN_PAUSE_MINUTES"):
+    for key in ("SPONTANEOUS_ENABLED", "SPONTANEOUS_CHECK_INTERVAL_MINUTES", "SPONTANEOUS_MIN_PAUSE_MINUTES"):
         lines.append(f"{key}={merged.get(key, '')}")
     lines.extend(["", "# Channel autopilot"])
     for key in ("AUTOPILOT_ENABLED", "AUTOPILOT_POSTS_PER_DAY", "AUTOPILOT_MIN_PAUSE_MINUTES"):
@@ -1048,11 +1056,15 @@ def unload_launch_agent(path: Path) -> None:
 def install_launch_agent(source: Path, destination: Path) -> None:
     if not IS_MACOS:
         return
+    env = read_env()
     destination.parent.mkdir(parents=True, exist_ok=True)
     with source.open("rb") as handle:
         data = plistlib.load(handle)
     data["WorkingDirectory"] = str(core.PROJECT_ROOT)
     data["ProgramArguments"] = [python_executable(), "-m", "daily_poster", *data.get("ProgramArguments", [])[3:]]
+    if destination == MAYBE_AGENT_PATH:
+        interval = int(env.get("SPONTANEOUS_CHECK_INTERVAL_MINUTES", "60"))
+        data["StartInterval"] = max(60, interval * 60)
     with destination.open("wb") as handle:
         plistlib.dump(data, handle, sort_keys=False)
     reload_launch_agent(destination)
