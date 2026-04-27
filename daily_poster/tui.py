@@ -169,8 +169,9 @@ class TgAutoTui:
                     "3. Preview автопоста",
                     "4. Запустить автопост сейчас",
                     "5. Синхронизировать память канала",
-                    "6. Память канала",
-                    "7. Назад",
+                    "6. Импортировать старые посты из файла",
+                    "7. Память канала",
+                    "8. Назад",
                 ]
             )
             self.show_option_screen(stdscr, lines)
@@ -190,8 +191,10 @@ class TgAutoTui:
             elif key == ord("5"):
                 self.run_cli_and_show(stdscr, ["sync-channel"])
             elif key == ord("6"):
+                self.import_history_menu(stdscr)
+            elif key == ord("7"):
                 self.show_memory(stdscr)
-            elif key in (ord("7"), ord("q"), 27):
+            elif key in (ord("8"), ord("q"), 27):
                 return
 
     def tracking_hub(self, stdscr: curses.window) -> None:
@@ -372,6 +375,17 @@ class TgAutoTui:
                 env[key] = value.strip()
         write_env(env)
         self.message = "Параметры отслеживания обновлены."
+
+    def import_history_menu(self, stdscr: curses.window) -> None:
+        path = self.prompt(stdscr, "Путь к .txt/.md/.json/.jsonl с историей канала: ")
+        if not path.strip():
+            self.message = "Импорт истории отменен."
+            return
+        confirm = self.prompt(stdscr, "Импортировать посты в память канала? Напиши YES: ")
+        if confirm != "YES":
+            self.message = "Импорт истории отменен."
+            return
+        self.run_cli_and_show(stdscr, ["import-history", path.strip()])
 
     def show_option_screen(self, stdscr: curses.window, lines: list[str]) -> None:
         stdscr.erase()

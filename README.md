@@ -20,6 +20,7 @@
 - пишет в стилистике канала;
 - опирается на локальную память и прошлые посты;
 - может публиковать свободные посты несколько раз в день;
+- умеет импортировать старую историю канала из файла;
 - не использует локальные папки как основной источник контента.
 
 ### 2. Отслеживание
@@ -160,6 +161,7 @@ python3 -m daily_poster publish
 python3 -m daily_poster topic-post "Почему трейты в Scala не просто интерфейсы" --preview --save
 python3 -m daily_poster autopilot --preview --save
 python3 -m daily_poster sync-channel
+python3 -m daily_poster import-history path/to/channel-history.json
 ```
 
 ## Расписание

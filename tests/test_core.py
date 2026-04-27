@@ -172,6 +172,35 @@ class CoreBehaviorTests(unittest.TestCase):
             self.assertIn("Сырой ответ сохранен", str(raised.exception))
             self.assertTrue(any(debug_dir.glob("*resp_test.json")))
 
+    def test_import_channel_history_from_telegram_json_and_skip_duplicates(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            history = root / "posts.jsonl"
+            memory = root / "memory.json"
+            export = root / "export.json"
+            export.write_text(
+                """
+                {
+                  "messages": [
+                    {"text": "Первый старый пост"},
+                    {"text": [{"type": "plain", "text": "Второй "}, {"type": "plain", "text": "пост"}]},
+                    {"text": "Первый старый пост"}
+                  ]
+                }
+                """.strip(),
+                encoding="utf-8",
+            )
+
+            with patch.object(core, "HISTORY_PATH", history), patch.object(core, "MEMORY_PATH", memory):
+                imported, skipped = core.import_channel_history(export)
+                recent = core.read_recent_posts(limit=10)
+                context = core.memory_context()
+
+            self.assertEqual(imported, 2)
+            self.assertEqual(skipped, 1)
+            self.assertIn("Первый старый пост", recent)
+            self.assertIn("Второй пост", context)
+
 
 if __name__ == "__main__":
     unittest.main()

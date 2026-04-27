@@ -280,6 +280,21 @@ def read_recent_posts(limit: int = 8) -> list[str]:
     return posts
 
 
+def history_texts() -> list[str]:
+    if not HISTORY_PATH.exists():
+        return []
+    texts: list[str] = []
+    for row in HISTORY_PATH.read_text(encoding="utf-8").splitlines():
+        try:
+            item = json.loads(row)
+        except json.JSONDecodeError:
+            continue
+        text = item.get("text")
+        if isinstance(text, str) and text.strip():
+            texts.append(text.strip())
+    return texts
+
+
 def read_memory() -> dict[str, Any]:
     if not MEMORY_PATH.exists():
         return {
@@ -377,6 +392,96 @@ def memory_context() -> str:
         f"Частые темы:\n{topics_block}\n\n"
         f"Последние смысловые следы постов:\n{recent_block}"
     )
+
+
+def flatten_message_text(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        parts: list[str] = []
+        for item in value:
+            if isinstance(item, str):
+                parts.append(item)
+            elif isinstance(item, dict):
+                text = item.get("text")
+                if isinstance(text, str):
+                    parts.append(text)
+        return "".join(parts)
+    return ""
+
+
+def split_plaintext_posts(text: str) -> list[str]:
+    blocks = re.split(r"\n\s*\n\s*\n+", text.strip())
+    posts = [block.strip() for block in blocks if block.strip()]
+    if len(posts) <= 1:
+        posts = [block.strip() for block in re.split(r"\n\s*\n", text.strip()) if block.strip()]
+    return posts
+
+
+def extract_posts_from_json(payload: Any) -> list[str]:
+    posts: list[str] = []
+    if isinstance(payload, dict):
+        if isinstance(payload.get("messages"), list):
+            for item in payload["messages"]:
+                if not isinstance(item, dict):
+                    continue
+                text = flatten_message_text(item.get("text") or item.get("caption"))
+                if text.strip():
+                    posts.append(text.strip())
+        else:
+            text = flatten_message_text(payload.get("text") or payload.get("caption"))
+            if text.strip():
+                posts.append(text.strip())
+    elif isinstance(payload, list):
+        for item in payload:
+            posts.extend(extract_posts_from_json(item))
+    return posts
+
+
+def load_posts_for_import(path: Path) -> list[str]:
+    suffix = path.suffix.lower()
+    text = path.read_text(encoding="utf-8", errors="replace")
+    if suffix == ".jsonl":
+        posts: list[str] = []
+        for row in text.splitlines():
+            row = row.strip()
+            if not row:
+                continue
+            try:
+                payload = json.loads(row)
+            except json.JSONDecodeError:
+                continue
+            posts.extend(extract_posts_from_json(payload))
+        return posts
+    if suffix == ".json":
+        payload = json.loads(text)
+        return extract_posts_from_json(payload)
+    return split_plaintext_posts(text)
+
+
+def import_channel_history(path: Path) -> tuple[int, int]:
+    if not path.exists():
+        raise ConfigError(f"Файл для импорта не найден: {path}")
+    try:
+        posts = load_posts_for_import(path)
+    except json.JSONDecodeError as exc:
+        raise ConfigError(f"Не удалось разобрать JSON-файл: {path}") from exc
+
+    existing = {text.strip() for text in history_texts()}
+    imported = 0
+    skipped = 0
+    for text in posts:
+        normalized = text.strip()
+        if not normalized:
+            continue
+        if normalized in existing:
+            skipped += 1
+            continue
+        append_history(normalized, kind="imported")
+        update_memory(normalized, kind="imported")
+        existing.add(normalized)
+        imported += 1
+    return imported, skipped
 
 
 def make_generation_input(
@@ -1536,6 +1641,14 @@ def command_sync_channel() -> int:
     return 0
 
 
+def command_import_history(args: argparse.Namespace) -> int:
+    path = Path(args.path).expanduser().resolve()
+    imported, skipped = import_channel_history(path)
+    print(f"Импортировано старых постов: {imported}")
+    print(f"Пропущено дублей: {skipped}")
+    return 0
+
+
 def command_autopilot(args: argparse.Namespace) -> int:
     settings = get_settings()
     if settings.active_mode != "autogen" and not args.force:
@@ -1625,6 +1738,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     sync_channel = subparsers.add_parser("sync-channel", help="Import new channel posts from Telegram updates into memory.")
     sync_channel.set_defaults(func=lambda _args: command_sync_channel())
+
+    import_history = subparsers.add_parser("import-history", help="Import old channel posts from a local file into memory.")
+    import_history.add_argument("path", help="Path to .txt, .md, .json, or .jsonl with historical posts.")
+    import_history.set_defaults(func=command_import_history)
 
     doctor = subparsers.add_parser("doctor", help="Run a local configuration and activity health check.")
     doctor.set_defaults(func=lambda _args: command_doctor())
