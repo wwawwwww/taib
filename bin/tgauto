@@ -1,4 +1,14 @@
-#!/usr/bin/env zsh
-cd /Users/artem/Documents/Codex/2026-04-27/codex
-exec /usr/bin/python3 -m daily_poster.tui "$@"
-
+#!/usr/bin/env sh
+SCRIPT_PATH="$0"
+while [ -L "$SCRIPT_PATH" ]; do
+  SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$SCRIPT_PATH")" && pwd)"
+  TARGET="$(readlink "$SCRIPT_PATH")"
+  case "$TARGET" in
+    /*) SCRIPT_PATH="$TARGET" ;;
+    *) SCRIPT_PATH="$SCRIPT_DIR/$TARGET" ;;
+  esac
+done
+SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$SCRIPT_PATH")" && pwd)"
+PROJECT_ROOT="$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)"
+cd "$PROJECT_ROOT" || exit 1
+exec "${PYTHON:-python3}" -m daily_poster.tui "$@"

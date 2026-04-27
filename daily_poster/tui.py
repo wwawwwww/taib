@@ -1,20 +1,31 @@
 from __future__ import annotations
 
-import curses
 import os
 import shutil
 import subprocess
 import sys
+import platform
 import textwrap
 from dataclasses import dataclass
 from pathlib import Path
 
 from daily_poster import __main__ as core
 
+try:
+    import curses
+except ImportError as exc:  # pragma: no cover - depends on platform runtime.
+    curses = None  # type: ignore[assignment]
+    CURSES_IMPORT_ERROR = exc
+else:
+    CURSES_IMPORT_ERROR = None
+
 
 LAUNCH_AGENT_PATH = Path.home() / "Library" / "LaunchAgents" / "com.codex.daily-poster.plist"
 MAYBE_AGENT_PATH = Path.home() / "Library" / "LaunchAgents" / "com.codex.maybe-poster.plist"
 AUTOPILOT_AGENT_PATH = Path.home() / "Library" / "LaunchAgents" / "com.codex.autopilot.plist"
+IS_MACOS = platform.system() == "Darwin"
+IS_WINDOWS = platform.system() == "Windows"
+IS_LINUX = platform.system() == "Linux"
 
 
 @dataclass(frozen=True)
@@ -52,6 +63,13 @@ def run() -> None:
         print("Запусти в интерактивном терминале:")
         print("  tgauto")
         return
+    if curses is None:
+        if IS_WINDOWS:
+            print("Для TUI на Windows нужен пакет windows-curses.")
+            print("Установи проект так: py -m pip install -e .")
+        else:
+            print(f"Не удалось импортировать curses: {CURSES_IMPORT_ERROR}")
+        raise SystemExit(1)
     if not sys.stdin.isatty() or not sys.stdout.isatty():
         print("tgauto нужно запускать в интерактивном терминале.")
         print("Попробуй: tgauto")
@@ -144,9 +162,8 @@ class TgAutoTui:
         model = env.get("OPENAI_MODEL", "gpt-5.1")
         chat = env.get("TELEGRAM_CHAT_ID", "not set")
         mode = env.get("ACTIVE_MODE", "tracking")
-        schedule = read_schedule()
-        schedule_text = f"{schedule[0]:02d}:{schedule[1]:02d}" if schedule else "not installed"
-        return f"Режим: {mode} | Модель: {model} | Канал: {chat} | Расписание: {schedule_text}"
+        schedule_text = schedule_status()
+        return f"Режим: {mode} | Модель: {model} | Канал: {chat} | Автозапуск: {schedule_text}"
 
     def autogen_hub(self, stdscr: curses.window) -> None:
         while True:
@@ -437,29 +454,32 @@ class TgAutoTui:
 
         write_env(env)
 
-        schedule = self.prompt(stdscr, "Настроить ежедневный пост на 21:00? YES/[Enter]: ")
-        if schedule == "YES":
-            update_plist_schedule(core.PROJECT_ROOT / "automation" / "com.codex.daily-poster.plist", 21, 0)
-            LAUNCH_AGENT_PATH.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(core.PROJECT_ROOT / "automation" / "com.codex.daily-poster.plist", LAUNCH_AGENT_PATH)
-            reload_launch_agent(LAUNCH_AGENT_PATH)
+        if IS_MACOS:
+            schedule = self.prompt(stdscr, "Настроить ежедневный пост на 21:00? YES/[Enter]: ")
+            if schedule == "YES":
+                update_plist_schedule(core.PROJECT_ROOT / "automation" / "com.codex.daily-poster.plist", 21, 0)
+                LAUNCH_AGENT_PATH.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(core.PROJECT_ROOT / "automation" / "com.codex.daily-poster.plist", LAUNCH_AGENT_PATH)
+                reload_launch_agent(LAUNCH_AGENT_PATH)
 
-        maybe = self.prompt(stdscr, "Включить фоновые maybe-post проверки раз в час? YES/[Enter]: ")
-        if maybe == "YES":
-            MAYBE_AGENT_PATH.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(core.PROJECT_ROOT / "automation" / "com.codex.maybe-poster.plist", MAYBE_AGENT_PATH)
-            reload_launch_agent(MAYBE_AGENT_PATH)
+            maybe = self.prompt(stdscr, "Включить фоновые maybe-post проверки раз в час? YES/[Enter]: ")
+            if maybe == "YES":
+                MAYBE_AGENT_PATH.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(core.PROJECT_ROOT / "automation" / "com.codex.maybe-poster.plist", MAYBE_AGENT_PATH)
+                reload_launch_agent(MAYBE_AGENT_PATH)
 
-        autopilot = self.prompt(stdscr, "Включить автоведение канала? YES/[Enter]: ")
-        if autopilot == "YES":
-            env = read_env()
-            env["AUTOPILOT_ENABLED"] = "true"
-            write_env(env)
-            source = core.PROJECT_ROOT / "automation" / "com.codex.autopilot.plist"
-            if source.exists():
-                AUTOPILOT_AGENT_PATH.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(source, AUTOPILOT_AGENT_PATH)
-                reload_launch_agent(AUTOPILOT_AGENT_PATH)
+            autopilot = self.prompt(stdscr, "Включить автоведение канала? YES/[Enter]: ")
+            if autopilot == "YES":
+                env = read_env()
+                env["AUTOPILOT_ENABLED"] = "true"
+                write_env(env)
+                source = core.PROJECT_ROOT / "automation" / "com.codex.autopilot.plist"
+                if source.exists():
+                    AUTOPILOT_AGENT_PATH.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(source, AUTOPILOT_AGENT_PATH)
+                    reload_launch_agent(AUTOPILOT_AGENT_PATH)
+        else:
+            self.message = f"Мастер завершен. Автозапуск для {platform.system()} настраивается по README."
 
         self.message = "Мастер настройки завершен."
 
@@ -572,6 +592,18 @@ class TgAutoTui:
                 return
 
     def configure_schedule(self, stdscr: curses.window) -> None:
+        if not IS_MACOS:
+            lines = [
+                "Автозапуск через TUI сейчас настраивается только на macOS.",
+                "",
+                "Для этой системы используй пошаговую инструкцию из README:",
+                "- Linux: cron или systemd --user",
+                "- Windows: Task Scheduler",
+                "",
+                f"Текущая система: {platform.system()}",
+            ]
+            self.show_text(stdscr, lines)
+            return
         current = read_schedule() or (21, 0)
         hour_text = self.prompt(stdscr, f"Hour 0-23 [{current[0]}]: ")
         minute_text = self.prompt(stdscr, f"Minute 0-59 [{current[1]}]: ")
@@ -625,9 +657,12 @@ class TgAutoTui:
                 "",
                 core.activity_digest(settings),
             ]
-            launch_agent = LAUNCH_AGENT_PATH
-            if not launch_agent.exists():
-                lines.extend(["", f"Warning: LaunchAgent is not installed: {launch_agent}"])
+            if IS_MACOS:
+                launch_agent = LAUNCH_AGENT_PATH
+                if not launch_agent.exists():
+                    lines.extend(["", f"Warning: LaunchAgent is not installed: {launch_agent}"])
+            else:
+                lines.extend(["", f"Автозапуск для {platform.system()} настраивается по README."])
             if any(path == Path.home() for path in settings.activity_scan_roots):
                 lines.extend(["", "Warning: scanning the whole home folder can be noisy and expensive."])
         except Exception as exc:  # noqa: BLE001
@@ -732,7 +767,7 @@ class TgAutoTui:
                 self.message = "Публикация поста по теме отменена."
                 return
         try:
-            args = ["/usr/bin/python3", "-m", "daily_poster", "topic-post", topic]
+            args = [python_executable(), "-m", "daily_poster", "topic-post", topic]
             if not publish:
                 args.extend(["--preview", "--save"])
             result = subprocess.run(
@@ -759,7 +794,7 @@ class TgAutoTui:
     def run_cli_and_show(self, stdscr: curses.window, args: list[str]) -> None:
         try:
             result = subprocess.run(
-                ["/usr/bin/python3", "-m", "daily_poster", *args],
+                [python_executable(), "-m", "daily_poster", *args],
                 cwd=str(core.PROJECT_ROOT),
                 check=False,
                 capture_output=True,
@@ -773,6 +808,9 @@ class TgAutoTui:
             self.message = f"Команда не выполнена: {exc}"
 
     def install_command(self, _stdscr: curses.window) -> None:
+        if IS_WINDOWS:
+            self.message = "На Windows команда tgauto появляется после `py -m pip install -e .`."
+            return
         source = core.PROJECT_ROOT / "bin" / "tgauto"
         target = Path("/usr/local/bin/tgauto")
         try:
@@ -945,6 +983,8 @@ def init_colors() -> None:
 
 
 def read_schedule() -> tuple[int, int] | None:
+    if not IS_MACOS:
+        return None
     path = LAUNCH_AGENT_PATH if LAUNCH_AGENT_PATH.exists() else core.PROJECT_ROOT / "automation" / "com.codex.daily-poster.plist"
     if not path.exists():
         return None
@@ -991,6 +1031,8 @@ def replace_value_after_key(text: str, key: str, value: int) -> str:
 
 
 def reload_launch_agent(path: Path = LAUNCH_AGENT_PATH) -> None:
+    if not IS_MACOS:
+        return
     uid = os.getuid()
     subprocess.run(["launchctl", "bootout", f"gui/{uid}", str(path)], check=False, capture_output=True)
     subprocess.run(["launchctl", "bootstrap", f"gui/{uid}", str(path)], check=False, capture_output=True)
@@ -1006,6 +1048,21 @@ def ensure_user_bin_in_zshrc() -> None:
         zshrc.write_text(text.rstrip() + "\n\n# Added by tgauto installer\n" + line + "\n", encoding="utf-8")
     else:
         zshrc.write_text("# Added by tgauto installer\n" + line + "\n", encoding="utf-8")
+
+
+def python_executable() -> str:
+    return sys.executable or ("py" if IS_WINDOWS else "python3")
+
+
+def schedule_status() -> str:
+    if IS_MACOS:
+        schedule = read_schedule()
+        return f"{schedule[0]:02d}:{schedule[1]:02d}" if schedule else "не настроен"
+    if IS_WINDOWS:
+        return "Task Scheduler"
+    if IS_LINUX:
+        return "cron/systemd"
+    return platform.system()
 
 
 def backup_prompt() -> Path:

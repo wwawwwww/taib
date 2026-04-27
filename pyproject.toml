@@ -3,7 +3,9 @@ name = "telegram-daily-ai-poster"
 version = "0.1.0"
 description = "Generate daily posts with OpenAI and publish them to a Telegram channel."
 requires-python = ">=3.10"
-dependencies = []
+dependencies = [
+  "windows-curses; platform_system == 'Windows'",
+]
 
 [project.scripts]
 tgauto = "daily_poster.tui:run"

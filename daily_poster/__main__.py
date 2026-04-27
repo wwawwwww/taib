@@ -5,6 +5,7 @@ import difflib
 import hashlib
 import json
 import os
+import platform
 import random
 import re
 import sys
@@ -1484,12 +1485,14 @@ def command_doctor() -> int:
     if any(path == Path.home() for path in settings.activity_scan_roots):
         warnings.append("Scanning the whole home folder can be noisy and more expensive.")
 
-    launch_agent = Path.home() / "Library" / "LaunchAgents" / "com.codex.daily-poster.plist"
-    if not launch_agent.exists():
-        warnings.append(f"LaunchAgent is not installed: {launch_agent}")
+    if platform.system() == "Darwin":
+        launch_agent = Path.home() / "Library" / "LaunchAgents" / "com.codex.daily-poster.plist"
+        if not launch_agent.exists():
+            warnings.append(f"LaunchAgent is not installed: {launch_agent}")
 
     print("tgauto doctor")
     print(f"Project: {PROJECT_ROOT}")
+    print(f"Platform: {platform.system()}")
     print(f"Active mode: {settings.active_mode}")
     print(f"Model: {settings.openai_model}")
     print(f"Channel: {settings.telegram_chat_id}")
