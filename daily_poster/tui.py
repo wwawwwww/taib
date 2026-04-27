@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import plistlib
 import shutil
 import subprocess
 import sys
@@ -323,6 +324,7 @@ class TgAutoTui:
         if mode == "autogen":
             env.setdefault("AUTOPILOT_ENABLED", "true")
         write_env(env)
+        sync_mode_agents(mode)
         self.message = f"Активный режим переключен на {mode}."
 
     def configure_autogen(self, stdscr: curses.window) -> None:
@@ -349,6 +351,7 @@ class TgAutoTui:
             or env.get("SPONTANEOUS_MIN_PAUSE_HOURS", "6")
         )
         write_env(env)
+        sync_mode_agents("autogen")
         self.message = "Настройки автогенерации обновлены."
 
     def configure_tracking_roots(self, stdscr: curses.window) -> None:
@@ -359,6 +362,7 @@ class TgAutoTui:
             env["ACTIVITY_SCAN_ROOTS"] = value.strip()
         env["ACTIVE_MODE"] = "tracking"
         write_env(env)
+        sync_mode_agents("tracking")
         self.message = "Папки для отслеживания обновлены."
 
     def configure_credentials(self, stdscr: curses.window) -> None:
@@ -458,15 +462,11 @@ class TgAutoTui:
             schedule = self.prompt(stdscr, "Настроить ежедневный пост на 21:00? YES/[Enter]: ")
             if schedule == "YES":
                 update_plist_schedule(core.PROJECT_ROOT / "automation" / "com.codex.daily-poster.plist", 21, 0)
-                LAUNCH_AGENT_PATH.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(core.PROJECT_ROOT / "automation" / "com.codex.daily-poster.plist", LAUNCH_AGENT_PATH)
-                reload_launch_agent(LAUNCH_AGENT_PATH)
+                install_launch_agent(core.PROJECT_ROOT / "automation" / "com.codex.daily-poster.plist", LAUNCH_AGENT_PATH)
 
             maybe = self.prompt(stdscr, "Включить фоновые maybe-post проверки раз в час? YES/[Enter]: ")
             if maybe == "YES":
-                MAYBE_AGENT_PATH.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(core.PROJECT_ROOT / "automation" / "com.codex.maybe-poster.plist", MAYBE_AGENT_PATH)
-                reload_launch_agent(MAYBE_AGENT_PATH)
+                install_launch_agent(core.PROJECT_ROOT / "automation" / "com.codex.maybe-poster.plist", MAYBE_AGENT_PATH)
 
             autopilot = self.prompt(stdscr, "Включить автоведение канала? YES/[Enter]: ")
             if autopilot == "YES":
@@ -475,9 +475,7 @@ class TgAutoTui:
                 write_env(env)
                 source = core.PROJECT_ROOT / "automation" / "com.codex.autopilot.plist"
                 if source.exists():
-                    AUTOPILOT_AGENT_PATH.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(source, AUTOPILOT_AGENT_PATH)
-                    reload_launch_agent(AUTOPILOT_AGENT_PATH)
+                    install_launch_agent(source, AUTOPILOT_AGENT_PATH)
         else:
             self.message = f"Мастер завершен. Автозапуск для {platform.system()} настраивается по README."
 
@@ -1038,6 +1036,36 @@ def reload_launch_agent(path: Path = LAUNCH_AGENT_PATH) -> None:
     subprocess.run(["launchctl", "bootstrap", f"gui/{uid}", str(path)], check=False, capture_output=True)
 
 
+def unload_launch_agent(path: Path) -> None:
+    if not IS_MACOS or not path.exists():
+        return
+    uid = os.getuid()
+    subprocess.run(["launchctl", "bootout", f"gui/{uid}", str(path)], check=False, capture_output=True)
+
+
+def install_launch_agent(source: Path, destination: Path) -> None:
+    if not IS_MACOS:
+        return
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with source.open("rb") as handle:
+        data = plistlib.load(handle)
+    data["WorkingDirectory"] = str(core.PROJECT_ROOT)
+    data["ProgramArguments"] = [python_executable(), "-m", "daily_poster", *data.get("ProgramArguments", [])[3:]]
+    with destination.open("wb") as handle:
+        plistlib.dump(data, handle, sort_keys=False)
+    reload_launch_agent(destination)
+
+
+def sync_mode_agents(mode: str) -> None:
+    if not IS_MACOS:
+        return
+    if mode == "autogen":
+        source = core.PROJECT_ROOT / "automation" / "com.codex.maybe-poster.plist"
+        install_launch_agent(source, MAYBE_AGENT_PATH)
+    elif mode == "tracking":
+        unload_launch_agent(MAYBE_AGENT_PATH)
+
+
 def ensure_user_bin_in_zshrc() -> None:
     zshrc = Path.home() / ".zshrc"
     line = 'export PATH="$HOME/bin:$PATH"'
@@ -1051,6 +1079,12 @@ def ensure_user_bin_in_zshrc() -> None:
 
 
 def python_executable() -> str:
+    if IS_WINDOWS:
+        venv_python = core.PROJECT_ROOT / ".venv" / "Scripts" / "python.exe"
+    else:
+        venv_python = core.PROJECT_ROOT / ".venv" / "bin" / "python"
+    if venv_python.exists():
+        return str(venv_python)
     return sys.executable or ("py" if IS_WINDOWS else "python3")
 
 
