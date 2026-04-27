@@ -1,133 +1,284 @@
-# tgauto
+# TG Auto
 
-`tgauto` - локальный AI-инструмент для ведения Telegram-канала от первого лица.
+`TG Auto` - это локальный AI-бот для ведения Telegram-канала.
 
-Проект рассчитан на реальное использование: бот пишет посты на русском, помнит историю канала, умеет работать в двух отдельных режимах и управляется через короткий TUI без перегруженного меню.
+Он умеет работать в двух основных режимах:
 
-## Что умеет продукт
+- `Автогенерация` - пишет свободные посты в стилистике канала, опираясь на память и историю.
+- `Отслеживание` - смотрит изменения в выбранных папках и превращает рабочий контекст в посты от первого лица.
 
-У `tgauto` есть четыре пользовательских раздела:
+Внутри есть TUI-интерфейс `tgauto`, локальная память канала, импорт старых постов, ручной пост по теме и CLI-команды для автоматизации.
 
-1. `Автогенерация`
-2. `Отслеживание`
-3. `Пост по теме`
-4. `Настройки`
+## Что нужно заранее
 
-### 1. Автогенерация
-
-Режим для канала, который бот ведет как автор:
-
-- пишет в стилистике канала;
-- опирается на локальную память и прошлые посты;
-- может публиковать свободные посты несколько раз в день;
-- умеет импортировать старую историю канала из файла;
-- не использует локальные папки как основной источник контента.
-
-### 2. Отслеживание
-
-Режим для канала-дневника работы:
-
-- смотрит выбранные папки на компьютере;
-- собирает контекст по изменениям в файлах;
-- видит код, текст и метаданные скачанных файлов;
-- после публикации фиксирует checkpoint и следующий пост строит только по новым изменениям.
-
-### 3. Пост по теме
-
-Ручной сценарий:
-
-- ты задаешь мысль, тему или тезис;
-- бот пишет пост в нужном тоне;
-- можно сделать preview или сразу опубликовать.
-
-### 4. Настройки
-
-В одном месте собраны:
-
-- OpenAI API key;
-- Telegram bot token и канал;
-- модель и примерная стоимость;
-- prompt автора;
-- расписание;
-- папки и лимиты отслеживания;
-- диагностика и логи.
-
-## Главное правило режимов
-
-`Автогенерация` и `Отслеживание` взаимоисключающие.
-
-В каждый момент времени активен только один режим:
-
-- `ACTIVE_MODE=autogen`
-- `ACTIVE_MODE=tracking`
-
-Это сделано специально, чтобы канал велся предсказуемо и без конфликтующих сценариев.
-
-## Быстрый старт
-
-Открой проект:
-
-```bash
-cd /Users/artem/Documents/Codex/2026-04-27/codex
-```
-
-Создай `.env`:
-
-```bash
-cp .env.example .env
-```
-
-Запусти интерфейс:
-
-```bash
-tgauto
-```
-
-Если команда еще не подхватилась в текущем терминале:
-
-```bash
-source ~/.zshrc
-```
-
-## Что нужно для запуска
+Для любой системы понадобится:
 
 1. OpenAI API key
 2. Telegram-бот от `@BotFather`
-3. Telegram-канал, куда бот будет публиковать сообщения
-4. Бот должен быть администратором канала
+3. Telegram-канал
+4. Бот-админ в этом канале
+5. `git`
+6. Python `3.10+`
 
-Минимальный `.env`:
+Минимальный `.env` после настройки выглядит так:
 
 ```env
 OPENAI_API_KEY=sk-...
 OPENAI_MODEL=gpt-5-mini
 TELEGRAM_BOT_TOKEN=123456789:ABC...
 TELEGRAM_CHAT_ID=@your_channel
-ACTIVE_MODE=tracking
+ACTIVE_MODE=autogen
 ```
 
-## Рекомендуемый первый сценарий
+## Как устроен интерфейс
 
-После запуска `tgauto`:
+После запуска `tgauto` ты увидишь четыре раздела:
 
-1. Открой `Настройки`
-2. Пройди `Быструю первичную настройку`
-3. Выбери модель
-4. Укажи канал
-5. Реши, какой режим нужен сейчас:
-   - `Автогенерация`
-   - `Отслеживание`
+1. `Автогенерация`
+2. `Отслеживание`
+3. `Пост по теме`
+4. `Настройки`
 
-Дальше продуктом можно пользоваться уже через главное меню без CLI-команд.
+Важно: `Автогенерация` и `Отслеживание` взаимоисключающие. Активным может быть только один режим.
 
-## Как работает память
+## macOS
 
-Бот хранит локальную память канала в:
+### Установка
+
+```bash
+git clone <URL_РЕПОЗИТОРИЯ>
+cd <ИМЯ_ПАПКИ_РЕПО>
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -e .
+cp .env.example .env
+```
+
+Открой `.env` и заполни:
+
+```env
+OPENAI_API_KEY=sk-...
+TELEGRAM_BOT_TOKEN=123456789:ABC...
+TELEGRAM_CHAT_ID=@your_channel
+ACTIVE_MODE=autogen
+```
+
+### Первый автогенерированный пост
+
+1. Запусти:
+
+```bash
+tgauto
+```
+
+2. Открой `Настройки`
+3. Пройди `Быструю первичную настройку`
+4. Открой `Автогенерация`
+5. При необходимости выбери:
+   - `Настроить автогенерацию`
+   - `Импортировать старые посты из файла`
+6. Выбери `Запустить автопост сейчас`
+
+CLI-эквивалент для первого автопоста:
+
+```bash
+python -m daily_poster autopilot --force
+```
+
+### Автозапуск на macOS
+
+Через TUI можно настроить ежедневный запуск прямо из `Настройки -> Расписание публикаций`.
+
+В проекте уже есть `launchd`-шаблоны:
+
+- [automation/com.codex.daily-poster.plist](/Users/artem/Documents/Codex/2026-04-27/codex/automation/com.codex.daily-poster.plist)
+- [automation/com.codex.maybe-poster.plist](/Users/artem/Documents/Codex/2026-04-27/codex/automation/com.codex.maybe-poster.plist)
+- [automation/com.codex.autopilot.plist](/Users/artem/Documents/Codex/2026-04-27/codex/automation/com.codex.autopilot.plist)
+
+Если хочешь руками:
+
+```bash
+mkdir -p ~/Library/LaunchAgents
+cp automation/com.codex.autopilot.plist ~/Library/LaunchAgents/
+launchctl load ~/Library/LaunchAgents/com.codex.autopilot.plist
+```
+
+## Windows
+
+### Установка
+
+Открой PowerShell:
+
+```powershell
+git clone <URL_РЕПОЗИТОРИЯ>
+cd <ИМЯ_ПАПКИ_РЕПО>
+py -3 -m venv .venv
+.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+python -m pip install -e .
+Copy-Item .env.example .env
+```
+
+Если PowerShell ругается на execution policy, можно на текущую сессию:
+
+```powershell
+Set-ExecutionPolicy -Scope Process Bypass
+```
+
+Пакет `windows-curses` подтянется автоматически через зависимости проекта, так что `tgauto` будет работать и на Windows.
+
+Заполни `.env`:
+
+```env
+OPENAI_API_KEY=sk-...
+TELEGRAM_BOT_TOKEN=123456789:ABC...
+TELEGRAM_CHAT_ID=@your_channel
+ACTIVE_MODE=autogen
+```
+
+### Первый автогенерированный пост
+
+```powershell
+tgauto
+```
+
+Дальше:
+
+1. `Настройки`
+2. `Быстрая первичная настройка`
+3. `Автогенерация`
+4. `Запустить автопост сейчас`
+
+CLI-эквивалент:
+
+```powershell
+python -m daily_poster autopilot --force
+```
+
+### Автозапуск на Windows
+
+Для фонового запуска используй `Task Scheduler`.
+
+Пример задачи раз в час:
+
+```powershell
+schtasks /Create /SC HOURLY /MO 1 /TN "TG Auto Autopilot" /TR "\"%CD%\\.venv\\Scripts\\python.exe\" -m daily_poster autopilot" /F
+```
+
+Если хочешь режим отслеживания раз в день, используй вместо `autopilot` команду:
+
+```powershell
+-m daily_poster publish
+```
+
+## Linux
+
+### Установка
+
+Открой терминал:
+
+```bash
+git clone <URL_РЕПОЗИТОРИЯ>
+cd <ИМЯ_ПАПКИ_РЕПО>
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -e .
+cp .env.example .env
+```
+
+Заполни `.env`:
+
+```env
+OPENAI_API_KEY=sk-...
+TELEGRAM_BOT_TOKEN=123456789:ABC...
+TELEGRAM_CHAT_ID=@your_channel
+ACTIVE_MODE=autogen
+```
+
+### Первый автогенерированный пост
+
+```bash
+tgauto
+```
+
+Потом:
+
+1. `Настройки`
+2. `Быстрая первичная настройка`
+3. `Автогенерация`
+4. `Запустить автопост сейчас`
+
+CLI-эквивалент:
+
+```bash
+python -m daily_poster autopilot --force
+```
+
+### Автозапуск на Linux
+
+Самый простой путь - `cron`.
+
+Пример фоновой проверки раз в час:
+
+```bash
+crontab -e
+```
+
+И строка:
+
+```cron
+0 * * * * cd <ABS_PATH_TO_REPO> && <ABS_PATH_TO_REPO>/.venv/bin/python -m daily_poster autopilot >> <ABS_PATH_TO_REPO>/logs/autopilot.log 2>&1
+```
+
+Если нужен режим отслеживания раз в день:
+
+```cron
+0 21 * * * cd <ABS_PATH_TO_REPO> && <ABS_PATH_TO_REPO>/.venv/bin/python -m daily_poster publish >> <ABS_PATH_TO_REPO>/logs/daily.log 2>&1
+```
+
+При желании можно использовать и `systemd --user`, но для первого запуска `cron` обычно быстрее и понятнее.
+
+## Импорт старой истории канала
+
+Если хочешь, чтобы бот понимал стиль канала по старым постам, можно импортировать историю:
+
+```bash
+python -m daily_poster import-history path/to/channel-history.json
+```
+
+Поддерживаются:
+
+- `.txt`
+- `.md`
+- `.json`
+- `.jsonl`
+
+То же самое доступно в `Автогенерация -> Импортировать старые посты из файла`.
+
+## Полезные команды
+
+```bash
+python -m daily_poster env-check
+python -m daily_poster doctor
+python -m daily_poster preview --save
+python -m daily_poster publish
+python -m daily_poster autopilot --preview --save
+python -m daily_poster autopilot --force
+python -m daily_poster sync-channel
+python -m daily_poster import-history path/to/channel-history.json
+python -m daily_poster topic-post "Тема поста" --preview --save
+```
+
+## Как хранится память
+
+Локальная память канала:
 
 - [data/memory.json](/Users/artem/Documents/Codex/2026-04-27/codex/data/memory.json)
 - [data/posts.jsonl](/Users/artem/Documents/Codex/2026-04-27/codex/data/posts.jsonl)
 
-Память нужна для того, чтобы:
+Она нужна, чтобы:
 
 - не повторять одни и те же темы;
 - удерживать стиль канала;
