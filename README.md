@@ -1,268 +1,202 @@
-# Telegram Daily AI Poster
+# tgauto
 
-Небольшой проект, который каждый день смотрит файлы, измененные с прошлого поста, генерирует по ним отчет через OpenAI API и публикует его в Telegram-канал через Telegram Bot API.
+`tgauto` - локальный AI-инструмент для ведения Telegram-канала от первого лица.
 
-Поддерживает:
+Проект рассчитан на реальное использование: бот пишет посты на русском, помнит историю канала, умеет работать в двух отдельных режимах и управляется через короткий TUI без перегруженного меню.
 
-- предпросмотр поста без публикации;
-- публикацию в канал;
-- сбор рабочего контекста из файлов, измененных с прошлого поста;
-- сохранение истории опубликованных постов;
-- настройку стиля через `config/post_prompt.md`;
-- ежедневный запуск через `cron` или macOS `launchd`.
+## Что умеет продукт
 
-## 1. Что нужно заранее
+У `tgauto` есть четыре пользовательских раздела:
 
-1. OpenAI API key: создай ключ в личном кабинете OpenAI.
-2. Telegram-канал, куда будут выходить посты.
-3. Telegram-бот:
-   - открой `@BotFather` в Telegram;
-   - выполни `/newbot`;
-   - сохрани токен вида `123456:ABC...`;
-   - добавь бота администратором в свой канал;
-   - дай ему право публиковать сообщения.
+1. `Автогенерация`
+2. `Отслеживание`
+3. `Пост по теме`
+4. `Настройки`
 
-## 2. Настройка проекта
+### 1. Автогенерация
 
-Открой терминал в папке проекта:
+Режим для канала, который бот ведет как автор:
+
+- пишет в стилистике канала;
+- опирается на локальную память и прошлые посты;
+- может публиковать свободные посты несколько раз в день;
+- не использует локальные папки как основной источник контента.
+
+### 2. Отслеживание
+
+Режим для канала-дневника работы:
+
+- смотрит выбранные папки на компьютере;
+- собирает контекст по изменениям в файлах;
+- видит код, текст и метаданные скачанных файлов;
+- после публикации фиксирует checkpoint и следующий пост строит только по новым изменениям.
+
+### 3. Пост по теме
+
+Ручной сценарий:
+
+- ты задаешь мысль, тему или тезис;
+- бот пишет пост в нужном тоне;
+- можно сделать preview или сразу опубликовать.
+
+### 4. Настройки
+
+В одном месте собраны:
+
+- OpenAI API key;
+- Telegram bot token и канал;
+- модель и примерная стоимость;
+- prompt автора;
+- расписание;
+- папки и лимиты отслеживания;
+- диагностика и логи.
+
+## Главное правило режимов
+
+`Автогенерация` и `Отслеживание` взаимоисключающие.
+
+В каждый момент времени активен только один режим:
+
+- `ACTIVE_MODE=autogen`
+- `ACTIVE_MODE=tracking`
+
+Это сделано специально, чтобы канал велся предсказуемо и без конфликтующих сценариев.
+
+## Быстрый старт
+
+Открой проект:
 
 ```bash
 cd /Users/artem/Documents/Codex/2026-04-27/codex
 ```
 
-Скопируй пример переменных окружения:
+Создай `.env`:
 
 ```bash
 cp .env.example .env
 ```
 
-Открой `.env` и заполни значения:
-
-```bash
-OPENAI_API_KEY=sk-...
-TELEGRAM_BOT_TOKEN=123456:ABC...
-TELEGRAM_CHAT_ID=@your_channel_username
-ACTIVITY_SCAN_ROOTS=~/Documents,~/Desktop,~/Downloads
-```
-
-Если канал приватный, `@username` не подойдет. Тогда временно опубликуй что-нибудь в канал, перешли пост боту `@userinfobot` или используй любой способ узнать numeric chat id канала. Обычно он выглядит примерно так:
-
-```bash
-TELEGRAM_CHAT_ID=-1001234567890
-```
-
-## 3. Настрой стиль канала
-
-Отредактируй файл:
-
-```bash
-config/post_prompt.md
-```
-
-Там задается стиль ежедневного отчета: как писать о задачах, проектах, языках программирования, выводах дня и том, чего не стоит раскрывать.
-
-## 4. Настрой папки для сканирования
-
-В `.env` есть настройка:
-
-```bash
-ACTIVITY_SCAN_ROOTS=~/Documents,~/Desktop,~/Downloads
-```
-
-Это список папок через запятую. Каждый день бот ищет там файлы, измененные с прошлого опубликованного поста, читает текстовые файлы и собирает краткий контекст для поста.
-
-Например, если твои проекты лежат в `~/Projects` и `~/Documents/Codex`, можно поставить:
-
-```bash
-ACTIVITY_SCAN_ROOTS=~/Projects,~/Documents/Codex
-```
-
-Есть защитные ограничения:
-
-- пропускаются `.env`, ключи, токены, архивы, картинки, видео, бинарные файлы;
-- пропускаются папки вроде `node_modules`, `.git`, `venv`, `Library`;
-- берется не весь диск целиком, а только заданные папки;
-- объем текста ограничен настройками `ACTIVITY_MAX_FILES`, `ACTIVITY_MAX_CHARS_PER_FILE`, `ACTIVITY_MAX_TOTAL_CHARS`.
-
-Посмотреть, что бот увидит с прошлого поста, без запроса к OpenAI:
-
-```bash
-python3 -m daily_poster context
-```
-
-## 5. Проверка без публикации
-
-Сгенерировать пост и просто вывести его в терминал:
-
-```bash
-python3 -m daily_poster preview
-```
-
-Сгенерировать пост и сохранить черновик в `data/drafts`:
-
-```bash
-python3 -m daily_poster preview --save
-```
-
-## 6. Публикация
-
-Сгенерировать и сразу опубликовать пост:
-
-```bash
-python3 -m daily_poster publish
-```
-
-Опубликовать конкретный текст из файла:
-
-```bash
-python3 -m daily_poster send-file data/drafts/2026-04-27.md
-```
-
-## 7. Ежедневный запуск через cron
-
-Открой cron:
-
-```bash
-crontab -e
-```
-
-Добавь строку для публикации каждый день в 21:00:
-
-```cron
-0 21 * * * cd /Users/artem/Documents/Codex/2026-04-27/codex && /usr/bin/python3 -m daily_poster publish >> logs/daily.log 2>&1
-```
-
-Создай папку логов, если ее еще нет:
-
-```bash
-mkdir -p logs
-```
-
-## 8. Ежедневный запуск через macOS launchd
-
-В проекте есть шаблон:
-
-```bash
-automation/com.codex.daily-poster.plist
-```
-
-Скопируй его в `~/Library/LaunchAgents`:
-
-```bash
-cp automation/com.codex.daily-poster.plist ~/Library/LaunchAgents/
-```
-
-Загрузи расписание:
-
-```bash
-launchctl load ~/Library/LaunchAgents/com.codex.daily-poster.plist
-```
-
-Остановить:
-
-```bash
-launchctl unload ~/Library/LaunchAgents/com.codex.daily-poster.plist
-```
-
-По умолчанию launchd-запуск стоит на 21:00 каждый день.
-
-## 9. Команды
+Запусти интерфейс:
 
 ```bash
 tgauto
-python3 -m daily_poster context
-python3 -m daily_poster preview
-python3 -m daily_poster preview --save
-python3 -m daily_poster publish
-python3 -m daily_poster maybe-post
-python3 -m daily_poster autopilot --preview --save
-python3 -m daily_poster sync-channel
-python3 -m daily_poster topic-post "Трейты в Scala" --preview --save
-python3 -m daily_poster memory
-python3 -m daily_poster send-file path/to/post.md
-python3 -m daily_poster env-check
 ```
 
-`tgauto` открывает терминальный интерфейс, где можно:
-
-- настроить `.env`;
-- изменить prompt бота;
-- выбрать модель и увидеть примерную стоимость;
-- поменять расписание ежедневного поста;
-- посмотреть рабочий контекст с прошлого поста;
-- открыть список измененных с прошлого поста файлов и посмотреть diff/details по выбранному файлу;
-- сгенерировать preview;
-- сгенерировать free preview — свободную мысль без файлового контекста;
-- написать тему/мысль и получить пост по ней;
-- посмотреть локальную память канала;
-- запустить maybe-post: свободный или рабочий пост с учетом минимальной паузы;
-- настроить автоведение канала: лимит постов в день, паузу, sync памяти и launchd-агент;
-- опубликовать отчет прямо сейчас;
-- настроить канал Telegram.
-
-Если команда `tgauto` не находится в уже открытом терминале, открой новый терминал или выполни:
+Если команда еще не подхватилась в текущем терминале:
 
 ```bash
 source ~/.zshrc
 ```
 
-Для файлов внутри git-репозитория экран изменений показывает `git diff`. Для обычных текстовых файлов без git бот хранит локальные снимки в `data/snapshots`: первый просмотр сохраняет baseline, а после следующего изменения будет показан local diff. Файлы вроде PDF, ZIP и картинок показываются как `download`/`binary`: бот передает в контекст имя, путь, расширение, размер, дату создания и дату изменения, но не читает их бинарное содержимое.
+## Что нужно для запуска
 
-После успешной публикации через `publish`, `send-file` или кнопку Publish now в TUI бот обновляет checkpoint. Все текущие файлы считаются уже учтенными, и следующий отчет будет смотреть только новые изменения после этого момента. Если изменений нет или сигнал слабый, например была только скачана картинка, бот должен честно написать спокойный отчет без выдуманных задач.
+1. OpenAI API key
+2. Telegram-бот от `@BotFather`
+3. Telegram-канал, куда бот будет публиковать сообщения
+4. Бот должен быть администратором канала
 
-## 10. Где что лежит
+Минимальный `.env`:
 
-- `config/post_prompt.md` - редакционная политика и стиль постов.
-- `.env` - секреты и настройки, не коммитить.
-- `.env.example` - пример настроек.
-- `data/drafts` - сохраненные черновики.
-- `data/posts.jsonl` - история публикаций.
-- `data/state.json` - checkpoint последнего опубликованного поста.
-- `data/memory.json` - локальная память канала: частые темы, последние посты, стилевые заметки.
-- `logs` - логи при запуске по расписанию.
-
-## 11. Полезные замечания
-
-- Telegram ограничивает одно сообщение примерно 4096 символами. Скрипт проверяет длину и попросит укоротить пост, если модель разошлась.
-- Если хочешь сначала утверждать посты вручную, используй `preview --save`, редактируй файл, потом публикуй через `send-file`.
-- Если OpenAI API вернул ошибку по модели, поменяй `OPENAI_MODEL` в `.env`.
-- Чем точнее заданы `ACTIVITY_SCAN_ROOTS`, тем лучше отчет. Если сканировать слишком широкие папки, в контекст попадет много шума.
-- `python3 -m daily_poster digest` показывает локальный score активности с прошлого поста.
-- `python3 -m daily_poster doctor` проверяет основные настройки и предупреждает о шумных/дорогих сценариях.
-- `python3 -m daily_poster mark-checkpoint` помечает текущие файлы как уже учтенные без публикации.
-- `python3 -m daily_poster maybe-post` может опубликовать рабочий или свободный авторский пост, но уважает `SPONTANEOUS_MIN_PAUSE_HOURS`.
-- `python3 -m daily_poster autopilot --preview --save` генерирует черновик автопоста в стиле канала.
-- `python3 -m daily_poster autopilot` запускает автоведение один раз с учетом лимитов.
-- `python3 -m daily_poster sync-channel` импортирует новые Telegram `channel_post` updates в локальную память.
-- `python3 -m daily_poster topic-post "моя мысль" --preview --save` делает пост по твоей теме без публикации.
-- `python3 -m daily_poster topic-post "моя мысль"` публикует пост по теме сразу.
-- `python3 -m daily_poster memory` показывает локальную память канала.
-- Перед отправкой в OpenAI текстовые выдержки проходят простую редацию секретов: API keys, токены, passwords и private keys заменяются на `[REDACTED]`.
-- Автотесты запускаются так: `python3 -m unittest discover -s tests -v`.
-
-Спонтанные посты настраиваются в `.env`:
-
-```bash
-SPONTANEOUS_ENABLED=true
-SPONTANEOUS_MIN_PAUSE_HOURS=6
+```env
+OPENAI_API_KEY=sk-...
+OPENAI_MODEL=gpt-5-mini
+TELEGRAM_BOT_TOKEN=123456789:ABC...
+TELEGRAM_CHAT_ID=@your_channel
+ACTIVE_MODE=tracking
 ```
 
-Фоновый агент `automation/com.codex.maybe-poster.plist` раз в час запускает `maybe-post`. Сам `maybe-post` не обязан публиковать каждый раз: он проверяет паузу, активность и иногда решает промолчать.
+## Рекомендуемый первый сценарий
 
-Автоведение канала настраивается в `.env`:
+После запуска `tgauto`:
+
+1. Открой `Настройки`
+2. Пройди `Быструю первичную настройку`
+3. Выбери модель
+4. Укажи канал
+5. Реши, какой режим нужен сейчас:
+   - `Автогенерация`
+   - `Отслеживание`
+
+Дальше продуктом можно пользоваться уже через главное меню без CLI-команд.
+
+## Как работает память
+
+Бот хранит локальную память канала в:
+
+- [data/memory.json](/Users/artem/Documents/Codex/2026-04-27/codex/data/memory.json)
+- [data/posts.jsonl](/Users/artem/Documents/Codex/2026-04-27/codex/data/posts.jsonl)
+
+Память нужна для того, чтобы:
+
+- не повторять одни и те же темы;
+- удерживать стиль канала;
+- помнить недавние смыслы и ходы;
+- использовать тон уже опубликованных сообщений.
+
+## Как работает режим отслеживания
+
+Бот читает только те папки, которые указаны в `ACTIVITY_SCAN_ROOTS`.
+
+Он:
+
+- пропускает `.env`, токены, private keys и похожие секреты;
+- пропускает мусорные каталоги вроде `.git`, `node_modules`, `venv`;
+- не отправляет бинарное содержимое PDF/ZIP/картинок в OpenAI;
+- для непрочитываемых файлов использует метаданные: имя, путь, размер, даты.
+
+После каждого успешного поста checkpoint обновляется. Все старые изменения считаются уже учтенными.
+
+Если сигнал слабый, например почти ничего не менялось, бот должен писать честно и спокойно, а не выдумывать деятельность.
+
+## Полезные команды
+
+Хотя основной сценарий идет через TUI, CLI тоже остается:
 
 ```bash
-AUTOPILOT_ENABLED=false
-AUTOPILOT_POSTS_PER_DAY=2
-AUTOPILOT_MIN_PAUSE_HOURS=4
-```
-
-Фоновый агент `automation/com.codex.autopilot.plist` раз в час запускает `autopilot`. Он не публикует сверх лимита и не нарушает минимальную паузу. Telegram Bot API не отдает старую историю канала задним числом, поэтому `sync-channel` импортирует только новые `channel_post` updates, которые бот получает после настройки. Старую историю можно добавить через локальную `data/posts.jsonl`/`data/memory.json` или экспортом.
-
-Посты по теме можно задавать на русском:
-
-```bash
+python3 -m daily_poster env-check
+python3 -m daily_poster doctor
+python3 -m daily_poster preview --save
+python3 -m daily_poster publish
 python3 -m daily_poster topic-post "Почему трейты в Scala не просто интерфейсы" --preview --save
+python3 -m daily_poster autopilot --preview --save
+python3 -m daily_poster sync-channel
 ```
 
-В TUI пункт `Пост по теме` тоже принимает русский ввод.
+## Расписание
+
+Для ежедневного постинга используется `launchd`.
+
+Шаблоны лежат здесь:
+
+- [automation/com.codex.daily-poster.plist](/Users/artem/Documents/Codex/2026-04-27/codex/automation/com.codex.daily-poster.plist)
+- [automation/com.codex.maybe-poster.plist](/Users/artem/Documents/Codex/2026-04-27/codex/automation/com.codex.maybe-poster.plist)
+- [automation/com.codex.autopilot.plist](/Users/artem/Documents/Codex/2026-04-27/codex/automation/com.codex.autopilot.plist)
+
+Через `tgauto` можно:
+
+- поменять ежедневное время постинга;
+- включить автогенерацию;
+- запускать посты вручную;
+- смотреть диагностику и логи.
+
+## Структура проекта
+
+- [daily_poster/__main__.py](/Users/artem/Documents/Codex/2026-04-27/codex/daily_poster/__main__.py) - ядро продукта и CLI
+- [daily_poster/tui.py](/Users/artem/Documents/Codex/2026-04-27/codex/daily_poster/tui.py) - terminal UI
+- [config/post_prompt.md](/Users/artem/Documents/Codex/2026-04-27/codex/config/post_prompt.md) - редакционная инструкция для автора
+- [.env.example](/Users/artem/Documents/Codex/2026-04-27/codex/.env.example) - пример конфигурации
+- [tests/test_core.py](/Users/artem/Documents/Codex/2026-04-27/codex/tests/test_core.py) - базовые unit-тесты
+
+## Проверка проекта
+
+```bash
+python3 -m unittest discover -s tests -v
+python3 -m compileall daily_poster tests
+```
+
+## Важные замечания
+
+- OpenAI API и ChatGPT подписка - это разные вещи; для API нужен отдельный биллинг.
+- Telegram Bot API не отдает задним числом всю историю канала. `sync-channel` подтягивает только доступные updates.
+- Если хочешь уменьшить стоимость, сначала сужай `ACTIVITY_SCAN_ROOTS` и только потом меняй язык или стиль prompt.
+- Для большинства сценариев хороший дефолт: `OPENAI_MODEL=gpt-5-mini`.
