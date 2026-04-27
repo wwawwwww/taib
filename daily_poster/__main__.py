@@ -130,6 +130,7 @@ class ApiError(RuntimeError):
 
 @dataclass(frozen=True)
 class Settings:
+    active_mode: str
     openai_api_key: str
     openai_model: str
     telegram_bot_token: str
@@ -203,8 +204,10 @@ def get_settings() -> Settings:
     exclude_dirs = DEFAULT_EXCLUDE_DIRS | parse_csv_set(os.environ.get("ACTIVITY_EXCLUDE_DIRS", ""))
     spontaneous_enabled = parse_bool(os.environ.get("SPONTANEOUS_ENABLED", "true"))
     autopilot_enabled = parse_bool(os.environ.get("AUTOPILOT_ENABLED", "false"))
+    active_mode = normalize_active_mode(os.environ.get("ACTIVE_MODE", "tracking"))
 
     return Settings(
+        active_mode=active_mode,
         openai_api_key=os.environ["OPENAI_API_KEY"],
         openai_model=os.environ.get("OPENAI_MODEL", "gpt-5.1"),
         telegram_bot_token=os.environ["TELEGRAM_BOT_TOKEN"],
@@ -231,6 +234,13 @@ def parse_csv_set(value: str) -> set[str]:
 
 def parse_bool(value: str) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "y", "on", "да"}
+
+
+def normalize_active_mode(value: str) -> str:
+    normalized = value.strip().lower()
+    if normalized in {"autogen", "tracking", "off"}:
+        return normalized
+    return "tracking"
 
 
 def parse_paths(value: str) -> list[Path]:
@@ -709,6 +719,59 @@ def activity_digest(settings: Settings) -> str:
         Tone: {stats["tone"]}
         """
     ).strip()
+
+
+def posts_stats() -> dict[str, Any]:
+    stats = {"today": 0, "total": 0, "by_kind": {}}
+    today = date.today().isoformat()
+    if not HISTORY_PATH.exists():
+        return stats
+    for row in HISTORY_PATH.read_text(encoding="utf-8").splitlines():
+        try:
+            item = json.loads(row)
+        except json.JSONDecodeError:
+            continue
+        kind = str(item.get("kind", "unknown"))
+        stats["total"] += 1
+        stats["by_kind"][kind] = stats["by_kind"].get(kind, 0) + 1
+        created_at = str(item.get("created_at", ""))
+        if created_at.startswith(today):
+            stats["today"] += 1
+    return stats
+
+
+def mode_summary(settings: Settings, mode: str) -> str:
+    posts = posts_stats()
+    if mode == "autogen":
+        return textwrap.dedent(
+            f"""
+            Режим: Автогенерация
+            Активен: {"да" if settings.active_mode == "autogen" else "нет"}
+            Автоведение включено: {"да" if settings.autopilot_enabled else "нет"}
+            Минимальная пауза: {settings.autopilot_min_pause_hours}h
+            Лимит автопостов в день: {settings.autopilot_posts_per_day}
+            Постов сегодня: {posts["today"]}
+            Постов всего: {posts["total"]}
+            С последнего поста прошло: {hours_since_last_post():.1f}h
+            """
+        ).strip()
+    if mode == "tracking":
+        stats = activity_stats(settings)
+        return textwrap.dedent(
+            f"""
+            Режим: Отслеживание
+            Активен: {"да" if settings.active_mode == "tracking" else "нет"}
+            Папки: {", ".join(str(path) for path in settings.activity_scan_roots)}
+            Измененных файлов с checkpoint: {stats["files"]}
+            Сильных сигналов: {stats["strong_files"]}
+            Слабых сигналов: {stats["weak_files"]}
+            Score: {stats["score"]}/100
+            Checkpoint: {checkpoint_label()}
+            Постов сегодня: {posts["today"]}
+            Постов всего: {posts["total"]}
+            """
+        ).strip()
+    return "Режим выключен."
 
 
 def file_metadata(path: Path) -> dict[str, str | int]:
@@ -1268,6 +1331,7 @@ def command_env_check() -> int:
     settings = get_settings()
     read_prompt()
     print("OK: .env прочитан")
+    print(f"Active mode: {settings.active_mode}")
     print(f"OpenAI model: {settings.openai_model}")
     print(f"Telegram chat: {settings.telegram_chat_id}")
     print(f"Post max chars: {settings.post_max_chars}")
@@ -1321,6 +1385,7 @@ def command_doctor() -> int:
 
     print("tgauto doctor")
     print(f"Project: {PROJECT_ROOT}")
+    print(f"Active mode: {settings.active_mode}")
     print(f"Model: {settings.openai_model}")
     print(f"Channel: {settings.telegram_chat_id}")
     print(f"Checkpoint: {checkpoint_label()}")
@@ -1367,6 +1432,9 @@ def choose_maybe_post_mode(settings: Settings) -> str:
 
 def command_maybe_post(args: argparse.Namespace) -> int:
     settings = get_settings()
+    if settings.active_mode != "autogen" and not args.force:
+        print("Skipped: активен не режим автогенерации (ACTIVE_MODE != autogen).")
+        return 0
     if not settings.spontaneous_enabled and not args.force:
         print("Skipped: spontaneous posting is disabled.")
         return 0
@@ -1401,6 +1469,9 @@ def command_maybe_post(args: argparse.Namespace) -> int:
 
 def command_publish() -> int:
     settings = get_settings()
+    if settings.active_mode != "tracking":
+        print("Skipped: публикация по контексту доступна только в режиме отслеживания (ACTIVE_MODE=tracking).")
+        return 0
     text = generate_post(settings, mode="activity")
     response = send_to_telegram(settings, text)
     append_history(text, response, kind="activity")
@@ -1467,6 +1538,9 @@ def command_sync_channel() -> int:
 
 def command_autopilot(args: argparse.Namespace) -> int:
     settings = get_settings()
+    if settings.active_mode != "autogen" and not args.force:
+        print("Skipped: активен не режим автогенерации (ACTIVE_MODE != autogen).")
+        return 0
     imported = sync_channel_memory(settings)
     if imported:
         print(f"Синхронизировал память канала: +{imported} постов.")

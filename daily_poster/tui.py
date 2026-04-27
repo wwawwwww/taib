@@ -70,27 +70,26 @@ class TgAutoTui:
         init_colors()
 
         actions = [
-            ("Мастер настройки бота", self.setup_wizard),
-            ("Статус", self.show_status),
-            ("Расширенные настройки", self.edit_env),
-            ("Редактировать prompt", self.edit_prompt),
-            ("Выбрать модель и цену", self.choose_model),
-            ("Настроить расписание", self.configure_schedule),
-            ("Сводка активности", self.show_digest),
-            ("Контекст с прошлого поста", self.show_context),
-            ("Измененные файлы и diff", self.changed_files_menu),
-            ("Зафиксировать checkpoint", self.mark_checkpoint_now),
-            ("Диагностика", self.show_doctor),
-            ("Логи", self.view_logs),
-            ("Preview по работе", self.generate_preview),
-            ("Свободный preview", self.generate_free_preview),
-            ("Пост по теме", self.topic_post_menu),
-            ("Память канала", self.show_memory),
-            ("Автоведение канала", self.autopilot_menu),
-            ("Maybe-post сейчас", self.maybe_post_now),
-            ("Опубликовать сейчас", self.publish_now),
-            ("Установить команду tgauto", self.install_command),
-            ("Выйти", None),
+            (
+                "Автогенерация",
+                "Свободные посты в стилистике канала. Работает без привязки к локальным файлам.",
+                self.autogen_hub,
+            ),
+            (
+                "Отслеживание",
+                "Посты по изменениям в выбранных папках и рабочему контексту с компьютера.",
+                self.tracking_hub,
+            ),
+            (
+                "Пост по теме",
+                "Форсированный пост по твоей мысли, тезису или короткому промпту.",
+                self.topic_post_menu,
+            ),
+            (
+                "Настройки",
+                "Канал, модель, prompt, расписание и технические параметры продукта.",
+                self.settings_hub,
+            ),
         ]
 
         while True:
@@ -101,30 +100,34 @@ class TgAutoTui:
             elif key in (curses.KEY_DOWN, ord("j")):
                 self.selected = (self.selected + 1) % len(actions)
             elif key in (ord("\n"), curses.KEY_ENTER, 10, 13):
-                label, handler = actions[self.selected]
+                _label, _subtitle, handler = actions[self.selected]
                 if handler is None:
                     return
                 handler(stdscr)
             elif key in (ord("q"), 27):
                 return
 
-    def draw_menu(self, stdscr: curses.window, actions: list[tuple[str, object]]) -> None:
+    def draw_menu(self, stdscr: curses.window, actions: list[tuple[str, str, object]]) -> None:
         stdscr.erase()
         h, w = stdscr.getmaxyx()
         title = "tgauto - авторский Telegram-бот"
         stdscr.addstr(1, 2, title[: w - 4], curses.color_pair(1) | curses.A_BOLD)
-        stdscr.addstr(2, 2, "↑/↓ или j/k — навигация, Enter — открыть, q — выйти."[: w - 4])
+        stdscr.addstr(2, 2, "Четыре понятных режима: выбери раздел, Enter — открыть, q — выйти."[: w - 4])
 
         status = self.status_line()
         stdscr.addstr(4, 2, status[: w - 4], curses.color_pair(2))
 
-        menu_height = max(1, h - 9)
+        menu_height = max(1, (h - 10) // 3)
         top = max(0, min(self.selected - menu_height + 1, len(actions) - menu_height))
-        for visible_idx, (label, _handler) in enumerate(actions[top: top + menu_height]):
+        row = 6
+        for visible_idx, (label, subtitle, _handler) in enumerate(actions[top: top + menu_height]):
             idx = top + visible_idx
-            y = 6 + visible_idx
+            y = row
             attr = curses.A_REVERSE if idx == self.selected else curses.A_NORMAL
-            stdscr.addstr(y, 4, f"{idx + 1}. {label}"[: w - 8], attr)
+            stdscr.addstr(y, 4, label[: w - 8], attr | curses.A_BOLD)
+            for offset, line in enumerate(textwrap.wrap(subtitle, max(20, w - 10))[:2], start=1):
+                stdscr.addstr(y + offset, 6, line[: w - 10], attr)
+            row += 3
 
         self.draw_footer(stdscr)
         stdscr.refresh()
@@ -140,37 +143,244 @@ class TgAutoTui:
         env = read_env()
         model = env.get("OPENAI_MODEL", "gpt-5.1")
         chat = env.get("TELEGRAM_CHAT_ID", "not set")
+        mode = env.get("ACTIVE_MODE", "tracking")
         schedule = read_schedule()
         schedule_text = f"{schedule[0]:02d}:{schedule[1]:02d}" if schedule else "not installed"
-        return f"Модель: {model} | Канал: {chat} | Расписание: {schedule_text}"
+        return f"Режим: {mode} | Модель: {model} | Канал: {chat} | Расписание: {schedule_text}"
 
-    def show_status(self, stdscr: curses.window) -> None:
+    def autogen_hub(self, stdscr: curses.window) -> None:
+        while True:
+            env = read_env()
+            lines = [
+                "Автогенерация",
+                "",
+                "Этот режим ведет канал как самостоятельный автор:",
+                "- опирается на память канала и его тон;",
+                "- может публиковать свободные посты по ходу дня;",
+                "- не использует локальные папки как основной источник.",
+                "",
+            ]
+            lines.extend(self.mode_panel_lines("autogen"))
+            lines.extend(
+                [
+                    "",
+                    "1. Включить этот режим",
+                    "2. Настроить автогенерацию",
+                    "3. Preview автопоста",
+                    "4. Запустить автопост сейчас",
+                    "5. Синхронизировать память канала",
+                    "6. Память канала",
+                    "7. Назад",
+                ]
+            )
+            self.show_option_screen(stdscr, lines)
+            key = stdscr.getch()
+            if key == ord("1"):
+                self.activate_mode("autogen")
+            elif key == ord("2"):
+                self.configure_autogen(stdscr)
+            elif key == ord("3"):
+                self.run_cli_and_show(stdscr, ["autopilot", "--preview", "--save", "--force"])
+            elif key == ord("4"):
+                answer = self.prompt(stdscr, "Запустить автопост сейчас? Напиши YES: ")
+                if answer == "YES":
+                    self.run_cli_and_show(stdscr, ["autopilot", "--force"])
+                else:
+                    self.message = "Автопост отменен."
+            elif key == ord("5"):
+                self.run_cli_and_show(stdscr, ["sync-channel"])
+            elif key == ord("6"):
+                self.show_memory(stdscr)
+            elif key in (ord("7"), ord("q"), 27):
+                return
+
+    def tracking_hub(self, stdscr: curses.window) -> None:
+        while True:
+            lines = [
+                "Отслеживание",
+                "",
+                "Этот режим наблюдает за выбранными папками и собирает контекст по изменениям:",
+                "- видит текстовые файлы, код и метаданные скачанных файлов;",
+                "- пишет посты от первого лица без упоминания сканирования;",
+                "- после публикации начинает отсчет заново с нового checkpoint.",
+                "",
+            ]
+            lines.extend(self.mode_panel_lines("tracking"))
+            lines.extend(
+                [
+                    "",
+                    "1. Включить этот режим",
+                    "2. Выбрать папки для отслеживания",
+                    "3. Сводка активности",
+                    "4. Измененные файлы и diff",
+                    "5. Preview поста по контексту",
+                    "6. Опубликовать пост сейчас",
+                    "7. Зафиксировать текущий checkpoint",
+                    "8. Назад",
+                ]
+            )
+            self.show_option_screen(stdscr, lines)
+            key = stdscr.getch()
+            if key == ord("1"):
+                self.activate_mode("tracking")
+            elif key == ord("2"):
+                self.configure_tracking_roots(stdscr)
+            elif key == ord("3"):
+                self.show_digest(stdscr)
+            elif key == ord("4"):
+                self.changed_files_menu(stdscr)
+            elif key == ord("5"):
+                self.generate_preview(stdscr)
+            elif key == ord("6"):
+                answer = self.prompt(stdscr, "Опубликовать пост по контексту сейчас? Напиши YES: ")
+                if answer == "YES":
+                    self.run_cli_and_show(stdscr, ["publish"])
+                else:
+                    self.message = "Публикация отменена."
+            elif key == ord("7"):
+                self.mark_checkpoint_now(stdscr)
+            elif key in (ord("8"), ord("q"), 27):
+                return
+
+    def settings_hub(self, stdscr: curses.window) -> None:
+        while True:
+            lines = [
+                "Настройки",
+                "",
+                "Здесь собраны все параметры продукта без внутренних команд и служебного шума.",
+                "",
+                "1. Быстрая первичная настройка",
+                "2. Канал и ключи",
+                "3. Модель и стоимость",
+                "4. Prompt автора",
+                "5. Расписание публикаций",
+                "6. Папки и лимиты отслеживания",
+                "7. Диагностика",
+                "8. Логи",
+                "9. Установить команду tgauto",
+                "0. Назад",
+            ]
+            self.show_option_screen(stdscr, lines)
+            key = stdscr.getch()
+            if key == ord("1"):
+                self.setup_wizard(stdscr)
+            elif key == ord("2"):
+                self.configure_credentials(stdscr)
+            elif key == ord("3"):
+                self.choose_model(stdscr)
+            elif key == ord("4"):
+                self.edit_prompt(stdscr)
+            elif key == ord("5"):
+                self.configure_schedule(stdscr)
+            elif key == ord("6"):
+                self.configure_tracking_limits(stdscr)
+            elif key == ord("7"):
+                self.show_doctor(stdscr)
+            elif key == ord("8"):
+                self.view_logs(stdscr)
+            elif key == ord("9"):
+                self.install_command(stdscr)
+            elif key in (ord("0"), ord("q"), 27):
+                return
+
+    def mode_panel_lines(self, mode: str) -> list[str]:
         env = read_env()
+        configured = all(env.get(key) for key in ("OPENAI_API_KEY", "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID"))
         lines = [
-            "Текущий статус",
-            "",
-            f"Project: {core.PROJECT_ROOT}",
-            f".env: {core.ENV_PATH}",
-            f"LaunchAgent: {LAUNCH_AGENT_PATH}",
-            f"Last post checkpoint: {core.checkpoint_label()}",
-            "",
-            f"OPENAI_API_KEY: {mask(env.get('OPENAI_API_KEY', ''))}",
-            f"OPENAI_MODEL: {env.get('OPENAI_MODEL', '')}",
-            f"TELEGRAM_BOT_TOKEN: {mask(env.get('TELEGRAM_BOT_TOKEN', ''))}",
-            f"TELEGRAM_CHAT_ID: {env.get('TELEGRAM_CHAT_ID', '')}",
-            f"ACTIVITY_SCAN_ROOTS: {env.get('ACTIVITY_SCAN_ROOTS', core.DEFAULT_SCAN_ROOTS)}",
-            f"POST_MAX_CHARS: {env.get('POST_MAX_CHARS', '3500')}",
-            f"POST_TEMPERATURE: {env.get('POST_TEMPERATURE', '0.8')}",
-            f"SPONTANEOUS_ENABLED: {env.get('SPONTANEOUS_ENABLED', 'true')}",
-            f"SPONTANEOUS_MIN_PAUSE_HOURS: {env.get('SPONTANEOUS_MIN_PAUSE_HOURS', '6')}",
-            f"AUTOPILOT_ENABLED: {env.get('AUTOPILOT_ENABLED', 'false')}",
-            f"AUTOPILOT_POSTS_PER_DAY: {env.get('AUTOPILOT_POSTS_PER_DAY', '2')}",
-            f"AUTOPILOT_MIN_PAUSE_HOURS: {env.get('AUTOPILOT_MIN_PAUSE_HOURS', '4')}",
-            f"Hours since last post: {core.hours_since_last_post():.1f}",
-            "",
-            "Команда `python3 -m daily_poster context` покажет тот же контекст вне TUI.",
+            f"Настроено: {'да' if configured else 'нет'}",
+            f"Активный режим продукта: {env.get('ACTIVE_MODE', 'tracking')}",
         ]
-        self.show_text(stdscr, lines)
+        try:
+            settings = core.get_settings()
+            lines.extend(core.mode_summary(settings, mode).splitlines())
+        except Exception as exc:  # noqa: BLE001
+            lines.append(f"Статус: нужна настройка ({exc})")
+        return lines
+
+    def activate_mode(self, mode: str) -> None:
+        env = read_env()
+        env["ACTIVE_MODE"] = mode
+        if mode == "autogen":
+            env.setdefault("AUTOPILOT_ENABLED", "true")
+        write_env(env)
+        self.message = f"Активный режим переключен на {mode}."
+
+    def configure_autogen(self, stdscr: curses.window) -> None:
+        env = read_env()
+        env["ACTIVE_MODE"] = "autogen"
+        env["AUTOPILOT_ENABLED"] = (
+            self.prompt(stdscr, f"Включить автогенерацию true/false [{env.get('AUTOPILOT_ENABLED', 'true')}]: ")
+            or env.get("AUTOPILOT_ENABLED", "true")
+        )
+        env["AUTOPILOT_POSTS_PER_DAY"] = (
+            self.prompt(stdscr, f"Максимум постов в день [{env.get('AUTOPILOT_POSTS_PER_DAY', '2')}]: ")
+            or env.get("AUTOPILOT_POSTS_PER_DAY", "2")
+        )
+        env["AUTOPILOT_MIN_PAUSE_HOURS"] = (
+            self.prompt(stdscr, f"Минимальная пауза между постами, часы [{env.get('AUTOPILOT_MIN_PAUSE_HOURS', '4')}]: ")
+            or env.get("AUTOPILOT_MIN_PAUSE_HOURS", "4")
+        )
+        env["SPONTANEOUS_ENABLED"] = (
+            self.prompt(stdscr, f"Разрешить спонтанные проверки true/false [{env.get('SPONTANEOUS_ENABLED', 'true')}]: ")
+            or env.get("SPONTANEOUS_ENABLED", "true")
+        )
+        env["SPONTANEOUS_MIN_PAUSE_HOURS"] = (
+            self.prompt(stdscr, f"Минимальная пауза для maybe-post, часы [{env.get('SPONTANEOUS_MIN_PAUSE_HOURS', '6')}]: ")
+            or env.get("SPONTANEOUS_MIN_PAUSE_HOURS", "6")
+        )
+        write_env(env)
+        self.message = "Настройки автогенерации обновлены."
+
+    def configure_tracking_roots(self, stdscr: curses.window) -> None:
+        env = read_env()
+        current = env.get("ACTIVITY_SCAN_ROOTS", core.DEFAULT_SCAN_ROOTS)
+        value = self.prompt(stdscr, f"Папки через запятую [{current}]: ")
+        if value.strip():
+            env["ACTIVITY_SCAN_ROOTS"] = value.strip()
+        env["ACTIVE_MODE"] = "tracking"
+        write_env(env)
+        self.message = "Папки для отслеживания обновлены."
+
+    def configure_credentials(self, stdscr: curses.window) -> None:
+        env = read_env()
+        fields = [
+            ("OPENAI_API_KEY", "OpenAI API key", True),
+            ("TELEGRAM_BOT_TOKEN", "Telegram bot token", True),
+            ("TELEGRAM_CHAT_ID", "Канал (@username или -100...)", False),
+        ]
+        for key, label, hidden in fields:
+            current = env.get(key, "")
+            shown = mask(current) if hidden else current
+            value = self.prompt(stdscr, f"{label} [{shown}]: ", hidden=hidden)
+            if value.strip():
+                env[key] = value.strip()
+        write_env(env)
+        self.message = "Канал и ключи обновлены."
+
+    def configure_tracking_limits(self, stdscr: curses.window) -> None:
+        env = read_env()
+        mapping = [
+            ("ACTIVITY_SCAN_ROOTS", "Папки для отслеживания"),
+            ("ACTIVITY_MAX_FILES", "Максимум файлов за проход"),
+            ("ACTIVITY_MAX_CHARS_PER_FILE", "Лимит символов на файл"),
+            ("ACTIVITY_MAX_TOTAL_CHARS", "Лимит символов всего"),
+        ]
+        for key, label in mapping:
+            current = env.get(key, "")
+            value = self.prompt(stdscr, f"{label} [{current}]: ")
+            if value.strip():
+                env[key] = value.strip()
+        write_env(env)
+        self.message = "Параметры отслеживания обновлены."
+
+    def show_option_screen(self, stdscr: curses.window, lines: list[str]) -> None:
+        stdscr.erase()
+        h, w = stdscr.getmaxyx()
+        for idx, line in enumerate(lines[: h - 3]):
+            attr = curses.color_pair(1) | curses.A_BOLD if idx == 0 else curses.A_NORMAL
+            stdscr.addstr(idx + 1, 2, line[: w - 4], attr)
+        self.draw_footer(stdscr)
+        stdscr.refresh()
 
     def setup_wizard(self, stdscr: curses.window) -> None:
         env = read_env()
@@ -187,6 +397,7 @@ class TgAutoTui:
             ("TELEGRAM_BOT_TOKEN", "Telegram bot token из BotFather", True),
             ("TELEGRAM_CHAT_ID", "Канал для публикации (@username или -100...)", False),
             ("OPENAI_MODEL", "Модель OpenAI", False),
+            ("ACTIVE_MODE", "Режим продукта: tracking или autogen", False),
             ("ACTIVITY_SCAN_ROOTS", "Папки для отслеживания через запятую", False),
             ("SPONTANEOUS_MIN_PAUSE_HOURS", "Минимальная пауза между любыми постами, часы", False),
             ("AUTOPILOT_ENABLED", "Автоведение канала включено? true/false", False),
@@ -195,6 +406,7 @@ class TgAutoTui:
 
         defaults = {
             "OPENAI_MODEL": "gpt-5-mini",
+            "ACTIVE_MODE": "tracking",
             "ACTIVITY_SCAN_ROOTS": core.DEFAULT_SCAN_ROOTS,
             "SPONTANEOUS_MIN_PAUSE_HOURS": "6",
             "AUTOPILOT_ENABLED": "false",
@@ -236,32 +448,6 @@ class TgAutoTui:
                 reload_launch_agent(AUTOPILOT_AGENT_PATH)
 
         self.message = "Мастер настройки завершен."
-
-    def edit_env(self, stdscr: curses.window) -> None:
-        env = read_env()
-        fields = [
-            ("OPENAI_API_KEY", True),
-            ("TELEGRAM_BOT_TOKEN", True),
-            ("TELEGRAM_CHAT_ID", False),
-            ("ACTIVITY_SCAN_ROOTS", False),
-            ("POST_MAX_CHARS", False),
-            ("POST_TEMPERATURE", False),
-            ("SPONTANEOUS_ENABLED", False),
-            ("SPONTANEOUS_MIN_PAUSE_HOURS", False),
-            ("AUTOPILOT_ENABLED", False),
-            ("AUTOPILOT_POSTS_PER_DAY", False),
-            ("AUTOPILOT_MIN_PAUSE_HOURS", False),
-        ]
-
-        for key, secret in fields:
-            current = env.get(key, "")
-            prompt = f"{key} [{mask(current) if secret else current}]: "
-            value = self.prompt(stdscr, prompt, hidden=secret)
-            if value.strip():
-                env[key] = value.strip()
-
-        write_env(env)
-        self.message = ".env updated."
 
     def edit_prompt(self, stdscr: curses.window) -> None:
         while True:
@@ -391,14 +577,6 @@ class TgAutoTui:
         reload_launch_agent()
         self.message = f"Daily schedule set to {hour:02d}:{minute:02d}."
 
-    def show_context(self, stdscr: curses.window) -> None:
-        try:
-            settings = core.get_settings()
-            text = core.build_activity_context(settings)
-        except Exception as exc:  # noqa: BLE001 - TUI should show user-friendly errors.
-            text = f"Error: {exc}"
-        self.show_text(stdscr, text.splitlines())
-
     def show_digest(self, stdscr: curses.window) -> None:
         try:
             settings = core.get_settings()
@@ -527,21 +705,6 @@ class TgAutoTui:
             self.message = "Preview failed."
         self.show_text(stdscr, "\n".join(lines).splitlines())
 
-    def generate_free_preview(self, stdscr: curses.window) -> None:
-        self.message = "Generating free preview..."
-        self.draw_footer(stdscr)
-        stdscr.refresh()
-        try:
-            settings = core.get_settings()
-            text = core.generate_post(settings, mode="free")
-            path = core.save_draft(text)
-            lines = [text, "", "---", f"Saved draft: {path}", f"Chars: {len(text)}"]
-            self.message = f"Free preview generated and saved: {path.name}"
-        except Exception as exc:  # noqa: BLE001
-            lines = [f"Error: {exc}"]
-            self.message = "Free preview failed."
-        self.show_text(stdscr, "\n".join(lines).splitlines())
-
     def topic_post_menu(self, stdscr: curses.window) -> None:
         topic = self.prompt(stdscr, "Тема/мысль для поста: ")
         if not topic.strip():
@@ -579,59 +742,6 @@ class TgAutoTui:
             text = f"Error: {exc}"
         self.show_text(stdscr, text.splitlines())
 
-    def autopilot_menu(self, stdscr: curses.window) -> None:
-        while True:
-            env = read_env()
-            lines = [
-                "Автоведение канала",
-                "",
-                f"Включено: {env.get('AUTOPILOT_ENABLED', 'false')}",
-                f"Постов в день: {env.get('AUTOPILOT_POSTS_PER_DAY', '2')}",
-                f"Минимальная пауза: {env.get('AUTOPILOT_MIN_PAUSE_HOURS', '4')}h",
-                "",
-                "1. Настроить параметры",
-                "2. Синхронизировать память из Telegram updates",
-                "3. Preview автопоста",
-                "4. Запустить автоведение сейчас",
-                "5. Установить launchd-агент",
-                "6. Назад",
-            ]
-            stdscr.erase()
-            h, w = stdscr.getmaxyx()
-            for idx, line in enumerate(lines):
-                if idx + 1 >= h - 2:
-                    break
-                stdscr.addstr(idx + 1, 2, line[: w - 4])
-            self.draw_footer(stdscr)
-            key = stdscr.getch()
-            if key == ord("1"):
-                env["AUTOPILOT_ENABLED"] = self.prompt(stdscr, f"Включено true/false [{env.get('AUTOPILOT_ENABLED', 'false')}]: ") or env.get("AUTOPILOT_ENABLED", "false")
-                env["AUTOPILOT_POSTS_PER_DAY"] = self.prompt(stdscr, f"Постов в день [{env.get('AUTOPILOT_POSTS_PER_DAY', '2')}]: ") or env.get("AUTOPILOT_POSTS_PER_DAY", "2")
-                env["AUTOPILOT_MIN_PAUSE_HOURS"] = self.prompt(stdscr, f"Минимальная пауза, часы [{env.get('AUTOPILOT_MIN_PAUSE_HOURS', '4')}]: ") or env.get("AUTOPILOT_MIN_PAUSE_HOURS", "4")
-                write_env(env)
-                self.message = "Параметры автоведения обновлены."
-            elif key == ord("2"):
-                self.run_cli_and_show(stdscr, ["sync-channel"])
-            elif key == ord("3"):
-                self.run_cli_and_show(stdscr, ["autopilot", "--preview", "--save", "--force"])
-            elif key == ord("4"):
-                confirm = self.prompt(stdscr, "Запустить автоведение сейчас? Напиши YES: ")
-                if confirm == "YES":
-                    self.run_cli_and_show(stdscr, ["autopilot"])
-                else:
-                    self.message = "Запуск автоведения отменен."
-            elif key == ord("5"):
-                source = core.PROJECT_ROOT / "automation" / "com.codex.autopilot.plist"
-                if source.exists():
-                    AUTOPILOT_AGENT_PATH.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(source, AUTOPILOT_AGENT_PATH)
-                    reload_launch_agent(AUTOPILOT_AGENT_PATH)
-                    self.message = "Launchd-агент автоведения установлен."
-                else:
-                    self.message = f"Не найден шаблон: {source}"
-            elif key in (ord("6"), ord("q"), 27):
-                return
-
     def run_cli_and_show(self, stdscr: curses.window, args: list[str]) -> None:
         try:
             result = subprocess.run(
@@ -647,40 +757,6 @@ class TgAutoTui:
             self.show_text(stdscr, output.splitlines() or ["Нет вывода."])
         except Exception as exc:  # noqa: BLE001
             self.message = f"Команда не выполнена: {exc}"
-
-    def maybe_post_now(self, stdscr: curses.window) -> None:
-        answer = self.prompt(stdscr, "Run maybe-post now? Type YES: ")
-        if answer != "YES":
-            self.message = "Maybe-post cancelled."
-            return
-        try:
-            result = subprocess.run(
-                ["/usr/bin/python3", "-m", "daily_poster", "maybe-post"],
-                cwd=str(core.PROJECT_ROOT),
-                check=False,
-                capture_output=True,
-                text=True,
-                timeout=180,
-            )
-            output = (result.stdout + "\n" + result.stderr).strip()
-            self.message = "Maybe-post finished."
-            self.show_text(stdscr, output.splitlines() or ["No output."])
-        except Exception as exc:  # noqa: BLE001
-            self.message = f"Maybe-post failed: {exc}"
-
-    def publish_now(self, stdscr: curses.window) -> None:
-        answer = self.prompt(stdscr, "Publish a generated report now? Type YES: ")
-        if answer != "YES":
-            self.message = "Publish cancelled."
-            return
-        self.message = "Publishing..."
-        self.draw_footer(stdscr)
-        stdscr.refresh()
-        try:
-            core.command_publish()
-            self.message = "Published successfully."
-        except Exception as exc:  # noqa: BLE001
-            self.message = f"Publish failed: {exc}"
 
     def install_command(self, _stdscr: curses.window) -> None:
         source = core.PROJECT_ROOT / "bin" / "tgauto"
@@ -771,6 +847,7 @@ def write_env(values: dict[str, str]) -> None:
         "OPENAI_MODEL",
         "TELEGRAM_BOT_TOKEN",
         "TELEGRAM_CHAT_ID",
+        "ACTIVE_MODE",
         "POST_LANGUAGE",
         "POST_MAX_CHARS",
         "POST_TEMPERATURE",
@@ -787,6 +864,7 @@ def write_env(values: dict[str, str]) -> None:
     ]
     defaults = {
         "OPENAI_MODEL": "gpt-5.1",
+        "ACTIVE_MODE": "tracking",
         "POST_LANGUAGE": "ru",
         "POST_MAX_CHARS": "3500",
         "POST_TEMPERATURE": "0.8",
@@ -809,6 +887,8 @@ def write_env(values: dict[str, str]) -> None:
     lines.extend(["", "# Telegram"])
     for key in ("TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID"):
         lines.append(f"{key}={merged.get(key, '')}")
+    lines.extend(["", "# Product mode"])
+    lines.append(f"ACTIVE_MODE={merged.get('ACTIVE_MODE', '')}")
     lines.extend(["", "# Posting"])
     for key in ("POST_LANGUAGE", "POST_MAX_CHARS", "POST_TEMPERATURE"):
         lines.append(f"{key}={merged.get(key, '')}")

@@ -12,6 +12,7 @@ from daily_poster import __main__ as core
 
 def make_settings(root: Path) -> core.Settings:
     return core.Settings(
+        active_mode="tracking",
         openai_api_key="test",
         openai_model="gpt-5.1",
         telegram_bot_token="token",
