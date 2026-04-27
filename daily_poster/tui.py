@@ -13,6 +13,8 @@ from daily_poster import __main__ as core
 
 
 LAUNCH_AGENT_PATH = Path.home() / "Library" / "LaunchAgents" / "com.codex.daily-poster.plist"
+MAYBE_AGENT_PATH = Path.home() / "Library" / "LaunchAgents" / "com.codex.maybe-poster.plist"
+AUTOPILOT_AGENT_PATH = Path.home() / "Library" / "LaunchAgents" / "com.codex.autopilot.plist"
 
 
 @dataclass(frozen=True)
@@ -68,8 +70,9 @@ class TgAutoTui:
         init_colors()
 
         actions = [
+            ("Мастер настройки бота", self.setup_wizard),
             ("Статус", self.show_status),
-            ("Настроить .env", self.edit_env),
+            ("Расширенные настройки", self.edit_env),
             ("Редактировать prompt", self.edit_prompt),
             ("Выбрать модель и цену", self.choose_model),
             ("Настроить расписание", self.configure_schedule),
@@ -164,6 +167,71 @@ class TgAutoTui:
             "Команда `python3 -m daily_poster context` покажет тот же контекст вне TUI.",
         ]
         self.show_text(stdscr, lines)
+
+    def setup_wizard(self, stdscr: curses.window) -> None:
+        env = read_env()
+        steps = [
+            "Мастер настройки проведет по основным шагам.",
+            "Можно нажимать Enter, чтобы оставить текущее значение.",
+            "Секреты не показываются полностью.",
+            "",
+        ]
+        self.show_text(stdscr, steps)
+
+        fields = [
+            ("OPENAI_API_KEY", "OpenAI API key", True),
+            ("TELEGRAM_BOT_TOKEN", "Telegram bot token из BotFather", True),
+            ("TELEGRAM_CHAT_ID", "Канал для публикации (@username или -100...)", False),
+            ("OPENAI_MODEL", "Модель OpenAI", False),
+            ("ACTIVITY_SCAN_ROOTS", "Папки для отслеживания через запятую", False),
+            ("SPONTANEOUS_MIN_PAUSE_HOURS", "Минимальная пауза между любыми постами, часы", False),
+            ("AUTOPILOT_ENABLED", "Автоведение канала включено? true/false", False),
+            ("AUTOPILOT_POSTS_PER_DAY", "Сколько автопостов максимум в день", False),
+        ]
+
+        defaults = {
+            "OPENAI_MODEL": "gpt-5-mini",
+            "ACTIVITY_SCAN_ROOTS": core.DEFAULT_SCAN_ROOTS,
+            "SPONTANEOUS_MIN_PAUSE_HOURS": "6",
+            "AUTOPILOT_ENABLED": "false",
+            "AUTOPILOT_POSTS_PER_DAY": "2",
+        }
+        for key, label, secret in fields:
+            current = env.get(key, defaults.get(key, ""))
+            shown = mask(current) if secret else current
+            value = self.prompt(stdscr, f"{label} [{shown}]: ", hidden=secret)
+            if value.strip():
+                env[key] = value.strip()
+            elif key not in env and current:
+                env[key] = current
+
+        write_env(env)
+
+        schedule = self.prompt(stdscr, "Настроить ежедневный пост на 21:00? YES/[Enter]: ")
+        if schedule == "YES":
+            update_plist_schedule(core.PROJECT_ROOT / "automation" / "com.codex.daily-poster.plist", 21, 0)
+            LAUNCH_AGENT_PATH.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(core.PROJECT_ROOT / "automation" / "com.codex.daily-poster.plist", LAUNCH_AGENT_PATH)
+            reload_launch_agent(LAUNCH_AGENT_PATH)
+
+        maybe = self.prompt(stdscr, "Включить фоновые maybe-post проверки раз в час? YES/[Enter]: ")
+        if maybe == "YES":
+            MAYBE_AGENT_PATH.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(core.PROJECT_ROOT / "automation" / "com.codex.maybe-poster.plist", MAYBE_AGENT_PATH)
+            reload_launch_agent(MAYBE_AGENT_PATH)
+
+        autopilot = self.prompt(stdscr, "Включить автоведение канала? YES/[Enter]: ")
+        if autopilot == "YES":
+            env = read_env()
+            env["AUTOPILOT_ENABLED"] = "true"
+            write_env(env)
+            source = core.PROJECT_ROOT / "automation" / "com.codex.autopilot.plist"
+            if source.exists():
+                AUTOPILOT_AGENT_PATH.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(source, AUTOPILOT_AGENT_PATH)
+                reload_launch_agent(AUTOPILOT_AGENT_PATH)
+
+        self.message = "Мастер настройки завершен."
 
     def edit_env(self, stdscr: curses.window) -> None:
         env = read_env()
@@ -743,10 +811,10 @@ def replace_value_after_key(text: str, key: str, value: int) -> str:
     return text[: start + len("<integer>")] + str(value) + text[end:]
 
 
-def reload_launch_agent() -> None:
+def reload_launch_agent(path: Path = LAUNCH_AGENT_PATH) -> None:
     uid = os.getuid()
-    subprocess.run(["launchctl", "bootout", f"gui/{uid}", str(LAUNCH_AGENT_PATH)], check=False, capture_output=True)
-    subprocess.run(["launchctl", "bootstrap", f"gui/{uid}", str(LAUNCH_AGENT_PATH)], check=False, capture_output=True)
+    subprocess.run(["launchctl", "bootout", f"gui/{uid}", str(path)], check=False, capture_output=True)
+    subprocess.run(["launchctl", "bootstrap", f"gui/{uid}", str(path)], check=False, capture_output=True)
 
 
 def ensure_user_bin_in_zshrc() -> None:
