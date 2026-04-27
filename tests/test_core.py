@@ -27,6 +27,7 @@ def make_settings(root: Path) -> core.Settings:
         activity_max_total_chars=60000,
         spontaneous_enabled=True,
         spontaneous_min_pause_minutes=360,
+        spontaneous_check_interval_minutes=60,
         autopilot_enabled=False,
         autopilot_posts_per_day=2,
         autopilot_min_pause_minutes=240,
@@ -200,6 +201,47 @@ class CoreBehaviorTests(unittest.TestCase):
             self.assertEqual(skipped, 1)
             self.assertIn("Первый старый пост", recent)
             self.assertIn("Второй пост", context)
+
+    def test_import_channel_history_from_telegram_html_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            history = root / "posts.jsonl"
+            memory = root / "memory.json"
+            export_dir = root / "telegram-export"
+            export_dir.mkdir()
+            (export_dir / "messages.html").write_text(
+                """
+                <html><body>
+                  <div class="message default clearfix">
+                    <div class="text">Первый HTML пост</div>
+                  </div>
+                  <div class="message default clearfix">
+                    <div class="text">Второй<br>HTML пост</div>
+                  </div>
+                </body></html>
+                """.strip(),
+                encoding="utf-8",
+            )
+            (export_dir / "messages2.html").write_text(
+                """
+                <html><body>
+                  <div class="message default clearfix">
+                    <div class="text">Третий HTML пост</div>
+                  </div>
+                </body></html>
+                """.strip(),
+                encoding="utf-8",
+            )
+
+            with patch.object(core, "HISTORY_PATH", history), patch.object(core, "MEMORY_PATH", memory):
+                imported, skipped = core.import_channel_history(export_dir)
+                recent = core.read_recent_posts(limit=10)
+
+            self.assertEqual(imported, 3)
+            self.assertEqual(skipped, 0)
+            self.assertIn("Первый HTML пост", recent)
+            self.assertIn("Второй\nHTML пост", recent)
+            self.assertIn("Третий HTML пост", recent)
 
 
 if __name__ == "__main__":

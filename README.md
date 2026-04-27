@@ -335,11 +335,15 @@ python -m daily_poster import-history path/to/channel-history.json
 - `.md`
 - `.json`
 - `.jsonl`
+- `.html`
+- `.htm`
 
 То же самое доступно в:
 
 - `Автогенерация`
 - `Импортировать старые посты из файла`
+
+Можно указывать не только один файл, но и целую папку с экспортом Telegram. Если у тебя архив состоит из `messages.html`, `messages2.html`, `messages3.html`, просто укажи путь к этой папке.
 
 ## Полезные команды
 

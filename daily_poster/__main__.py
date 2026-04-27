@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import difflib
 import hashlib
+import html
 import json
 import os
 import platform
@@ -16,6 +17,7 @@ import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from datetime import date, datetime, time
+from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
 
@@ -454,6 +456,64 @@ def extract_posts_from_json(payload: Any) -> list[str]:
     return posts
 
 
+class TelegramHtmlExportParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.posts: list[str] = []
+        self._capture_depth = 0
+        self._chunks: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        classes = {
+            part
+            for key, value in attrs
+            if key == "class" and value
+            for part in value.split()
+        }
+        if "text" in classes:
+            if self._capture_depth == 0:
+                self._chunks = []
+            self._capture_depth += 1
+            return
+        if self._capture_depth > 0 and tag == "br":
+            self._chunks.append("\n")
+
+    def handle_endtag(self, tag: str) -> None:
+        if self._capture_depth <= 0:
+            return
+        if tag == "div":
+            self._capture_depth -= 1
+            if self._capture_depth == 0:
+                text = html.unescape("".join(self._chunks)).strip()
+                text = re.sub(r"\n{3,}", "\n\n", text)
+                if text:
+                    self.posts.append(text)
+                self._chunks = []
+
+    def handle_data(self, data: str) -> None:
+        if self._capture_depth > 0:
+            self._chunks.append(data)
+
+
+def extract_posts_from_html(text: str) -> list[str]:
+    parser = TelegramHtmlExportParser()
+    parser.feed(text)
+    parser.close()
+    return parser.posts
+
+
+def iter_import_sources(path: Path) -> list[Path]:
+    if path.is_file():
+        return [path]
+    if not path.is_dir():
+        raise ConfigError(f"Путь для импорта не найден: {path}")
+    supported = {".txt", ".md", ".json", ".jsonl", ".html", ".htm"}
+    files = [item for item in sorted(path.rglob("*")) if item.is_file() and item.suffix.lower() in supported]
+    if not files:
+        raise ConfigError(f"В папке не найдено поддерживаемых файлов для импорта: {path}")
+    return files
+
+
 def load_posts_for_import(path: Path) -> list[str]:
     suffix = path.suffix.lower()
     text = path.read_text(encoding="utf-8", errors="replace")
@@ -472,31 +532,32 @@ def load_posts_for_import(path: Path) -> list[str]:
     if suffix == ".json":
         payload = json.loads(text)
         return extract_posts_from_json(payload)
+    if suffix in {".html", ".htm"}:
+        return extract_posts_from_html(text)
     return split_plaintext_posts(text)
 
 
 def import_channel_history(path: Path) -> tuple[int, int]:
-    if not path.exists():
-        raise ConfigError(f"Файл для импорта не найден: {path}")
-    try:
-        posts = load_posts_for_import(path)
-    except json.JSONDecodeError as exc:
-        raise ConfigError(f"Не удалось разобрать JSON-файл: {path}") from exc
-
+    sources = iter_import_sources(path)
     existing = {text.strip() for text in history_texts()}
     imported = 0
     skipped = 0
-    for text in posts:
-        normalized = text.strip()
-        if not normalized:
-            continue
-        if normalized in existing:
-            skipped += 1
-            continue
-        append_history(normalized, kind="imported")
-        update_memory(normalized, kind="imported")
-        existing.add(normalized)
-        imported += 1
+    for source in sources:
+        try:
+            posts = load_posts_for_import(source)
+        except json.JSONDecodeError as exc:
+            raise ConfigError(f"Не удалось разобрать JSON-файл: {source}") from exc
+        for text in posts:
+            normalized = text.strip()
+            if not normalized:
+                continue
+            if normalized in existing:
+                skipped += 1
+                continue
+            append_history(normalized, kind="imported")
+            update_memory(normalized, kind="imported")
+            existing.add(normalized)
+            imported += 1
     return imported, skipped
 
 
