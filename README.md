@@ -164,15 +164,6 @@ python3 -m daily_poster sync-channel
 python3 -m daily_poster import-history path/to/channel-history.json
 ```
 
-## Расписание
-
-Для ежедневного постинга используется `launchd`.
-
-Шаблоны лежат здесь:
-
-- [automation/com.codex.daily-poster.plist](/Users/artem/Documents/Codex/2026-04-27/codex/automation/com.codex.daily-poster.plist)
-- [automation/com.codex.maybe-poster.plist](/Users/artem/Documents/Codex/2026-04-27/codex/automation/com.codex.maybe-poster.plist)
-- [automation/com.codex.autopilot.plist](/Users/artem/Documents/Codex/2026-04-27/codex/automation/com.codex.autopilot.plist)
 
 Через `tgauto` можно:
 
@@ -189,16 +180,6 @@ python3 -m daily_poster import-history path/to/channel-history.json
 - [.env.example](/Users/artem/Documents/Codex/2026-04-27/codex/.env.example) - пример конфигурации
 - [tests/test_core.py](/Users/artem/Documents/Codex/2026-04-27/codex/tests/test_core.py) - базовые unit-тесты
 
-## Проверка проекта
 
-```bash
-python3 -m unittest discover -s tests -v
-python3 -m compileall daily_poster tests
-```
 
-## Важные замечания
-
-- OpenAI API и ChatGPT подписка - это разные вещи; для API нужен отдельный биллинг.
-- Telegram Bot API не отдает задним числом всю историю канала. `sync-channel` подтягивает только доступные updates.
-- Если хочешь уменьшить стоимость, сначала сужай `ACTIVITY_SCAN_ROOTS` и только потом меняй язык или стиль prompt.
-- Для большинства сценариев хороший дефолт: `OPENAI_MODEL=gpt-5-mini`.
+Для связи и уточнений используйте ТГ автора @parano1c
