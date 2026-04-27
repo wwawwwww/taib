@@ -1,0 +1,11 @@
+.env
+__pycache__/
+*.pyc
+.pytest_cache/
+data/drafts/*.md
+data/debug/
+data/memory.json
+data/posts.jsonl
+data/state.json
+data/snapshots/
+logs/*.log

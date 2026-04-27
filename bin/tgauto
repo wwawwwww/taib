@@ -1,0 +1,4 @@
+#!/usr/bin/env zsh
+cd /Users/artem/Documents/Codex/2026-04-27/codex
+exec /usr/bin/python3 -m daily_poster.tui "$@"
+
