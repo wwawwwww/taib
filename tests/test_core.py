@@ -26,10 +26,10 @@ def make_settings(root: Path) -> core.Settings:
         activity_max_chars_per_file=6000,
         activity_max_total_chars=60000,
         spontaneous_enabled=True,
-        spontaneous_min_pause_hours=6,
+        spontaneous_min_pause_minutes=360,
         autopilot_enabled=False,
         autopilot_posts_per_day=2,
-        autopilot_min_pause_hours=4,
+        autopilot_min_pause_minutes=240,
     )
 
 

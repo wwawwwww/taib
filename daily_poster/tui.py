@@ -338,18 +338,20 @@ class TgAutoTui:
             self.prompt(stdscr, f"Максимум постов в день [{env.get('AUTOPILOT_POSTS_PER_DAY', '2')}]: ")
             or env.get("AUTOPILOT_POSTS_PER_DAY", "2")
         )
-        env["AUTOPILOT_MIN_PAUSE_HOURS"] = (
-            self.prompt(stdscr, f"Минимальная пауза между постами, часы [{env.get('AUTOPILOT_MIN_PAUSE_HOURS', '4')}]: ")
-            or env.get("AUTOPILOT_MIN_PAUSE_HOURS", "4")
+        env["AUTOPILOT_MIN_PAUSE_MINUTES"] = (
+            self.prompt(stdscr, f"Минимальная пауза между постами, минуты [{env.get('AUTOPILOT_MIN_PAUSE_MINUTES', '240')}]: ")
+            or env.get("AUTOPILOT_MIN_PAUSE_MINUTES", "240")
         )
+        env.pop("AUTOPILOT_MIN_PAUSE_HOURS", None)
         env["SPONTANEOUS_ENABLED"] = (
             self.prompt(stdscr, f"Разрешить спонтанные проверки true/false [{env.get('SPONTANEOUS_ENABLED', 'true')}]: ")
             or env.get("SPONTANEOUS_ENABLED", "true")
         )
-        env["SPONTANEOUS_MIN_PAUSE_HOURS"] = (
-            self.prompt(stdscr, f"Минимальная пауза для maybe-post, часы [{env.get('SPONTANEOUS_MIN_PAUSE_HOURS', '6')}]: ")
-            or env.get("SPONTANEOUS_MIN_PAUSE_HOURS", "6")
+        env["SPONTANEOUS_MIN_PAUSE_MINUTES"] = (
+            self.prompt(stdscr, f"Минимальная пауза для maybe-post, минуты [{env.get('SPONTANEOUS_MIN_PAUSE_MINUTES', '360')}]: ")
+            or env.get("SPONTANEOUS_MIN_PAUSE_MINUTES", "360")
         )
+        env.pop("SPONTANEOUS_MIN_PAUSE_HOURS", None)
         write_env(env)
         sync_mode_agents("autogen")
         self.message = "Настройки автогенерации обновлены."
@@ -434,7 +436,7 @@ class TgAutoTui:
             ("OPENAI_MODEL", "Модель OpenAI", False),
             ("ACTIVE_MODE", "Режим продукта: tracking или autogen", False),
             ("ACTIVITY_SCAN_ROOTS", "Папки для отслеживания через запятую", False),
-            ("SPONTANEOUS_MIN_PAUSE_HOURS", "Минимальная пауза между любыми постами, часы", False),
+            ("SPONTANEOUS_MIN_PAUSE_MINUTES", "Минимальная пауза между любыми постами, минуты", False),
             ("AUTOPILOT_ENABLED", "Автоведение канала включено? true/false", False),
             ("AUTOPILOT_POSTS_PER_DAY", "Сколько автопостов максимум в день", False),
         ]
@@ -443,7 +445,7 @@ class TgAutoTui:
             "OPENAI_MODEL": "gpt-5-mini",
             "ACTIVE_MODE": "tracking",
             "ACTIVITY_SCAN_ROOTS": core.DEFAULT_SCAN_ROOTS,
-            "SPONTANEOUS_MIN_PAUSE_HOURS": "6",
+            "SPONTANEOUS_MIN_PAUSE_MINUTES": "360",
             "AUTOPILOT_ENABLED": "false",
             "AUTOPILOT_POSTS_PER_DAY": "2",
         }
@@ -902,10 +904,10 @@ def write_env(values: dict[str, str]) -> None:
         "POST_MAX_CHARS",
         "POST_TEMPERATURE",
         "SPONTANEOUS_ENABLED",
-        "SPONTANEOUS_MIN_PAUSE_HOURS",
+        "SPONTANEOUS_MIN_PAUSE_MINUTES",
         "AUTOPILOT_ENABLED",
         "AUTOPILOT_POSTS_PER_DAY",
-        "AUTOPILOT_MIN_PAUSE_HOURS",
+        "AUTOPILOT_MIN_PAUSE_MINUTES",
         "ACTIVITY_SCAN_ROOTS",
         "ACTIVITY_EXCLUDE_DIRS",
         "ACTIVITY_MAX_FILES",
@@ -919,10 +921,10 @@ def write_env(values: dict[str, str]) -> None:
         "POST_MAX_CHARS": "3500",
         "POST_TEMPERATURE": "0.8",
         "SPONTANEOUS_ENABLED": "true",
-        "SPONTANEOUS_MIN_PAUSE_HOURS": "6",
+        "SPONTANEOUS_MIN_PAUSE_MINUTES": "360",
         "AUTOPILOT_ENABLED": "false",
         "AUTOPILOT_POSTS_PER_DAY": "2",
-        "AUTOPILOT_MIN_PAUSE_HOURS": "4",
+        "AUTOPILOT_MIN_PAUSE_MINUTES": "240",
         "ACTIVITY_SCAN_ROOTS": core.DEFAULT_SCAN_ROOTS,
         "ACTIVITY_EXCLUDE_DIRS": "node_modules,.git,.venv,venv,__pycache__,Library",
         "ACTIVITY_MAX_FILES": "80",
@@ -943,10 +945,10 @@ def write_env(values: dict[str, str]) -> None:
     for key in ("POST_LANGUAGE", "POST_MAX_CHARS", "POST_TEMPERATURE"):
         lines.append(f"{key}={merged.get(key, '')}")
     lines.extend(["", "# Spontaneous posting"])
-    for key in ("SPONTANEOUS_ENABLED", "SPONTANEOUS_MIN_PAUSE_HOURS"):
+    for key in ("SPONTANEOUS_ENABLED", "SPONTANEOUS_MIN_PAUSE_MINUTES"):
         lines.append(f"{key}={merged.get(key, '')}")
     lines.extend(["", "# Channel autopilot"])
-    for key in ("AUTOPILOT_ENABLED", "AUTOPILOT_POSTS_PER_DAY", "AUTOPILOT_MIN_PAUSE_HOURS"):
+    for key in ("AUTOPILOT_ENABLED", "AUTOPILOT_POSTS_PER_DAY", "AUTOPILOT_MIN_PAUSE_MINUTES"):
         lines.append(f"{key}={merged.get(key, '')}")
     lines.extend(["", "# Daily activity scan"])
     for key in ordered_keys[12:]:

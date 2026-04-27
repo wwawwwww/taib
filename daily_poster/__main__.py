@@ -145,10 +145,10 @@ class Settings:
     activity_max_chars_per_file: int
     activity_max_total_chars: int
     spontaneous_enabled: bool
-    spontaneous_min_pause_hours: int
+    spontaneous_min_pause_minutes: int
     autopilot_enabled: bool
     autopilot_posts_per_day: int
-    autopilot_min_pause_hours: int
+    autopilot_min_pause_minutes: int
 
 
 def load_dotenv(path: Path) -> None:
@@ -195,11 +195,21 @@ def get_settings() -> Settings:
         activity_max_files = int(os.environ.get("ACTIVITY_MAX_FILES", "80"))
         activity_max_chars_per_file = int(os.environ.get("ACTIVITY_MAX_CHARS_PER_FILE", "6000"))
         activity_max_total_chars = int(os.environ.get("ACTIVITY_MAX_TOTAL_CHARS", "60000"))
-        spontaneous_min_pause_hours = int(os.environ.get("SPONTANEOUS_MIN_PAUSE_HOURS", "6"))
+        spontaneous_min_pause_minutes = int(
+            os.environ.get(
+                "SPONTANEOUS_MIN_PAUSE_MINUTES",
+                str(int(os.environ.get("SPONTANEOUS_MIN_PAUSE_HOURS", "6")) * 60),
+            )
+        )
         autopilot_posts_per_day = int(os.environ.get("AUTOPILOT_POSTS_PER_DAY", "2"))
-        autopilot_min_pause_hours = int(os.environ.get("AUTOPILOT_MIN_PAUSE_HOURS", "4"))
+        autopilot_min_pause_minutes = int(
+            os.environ.get(
+                "AUTOPILOT_MIN_PAUSE_MINUTES",
+                str(int(os.environ.get("AUTOPILOT_MIN_PAUSE_HOURS", "4")) * 60),
+            )
+        )
     except ValueError as exc:
-        raise ConfigError("ACTIVITY_* и SPONTANEOUS_MIN_PAUSE_HOURS должны быть числами.") from exc
+        raise ConfigError("ACTIVITY_* и *_MIN_PAUSE_MINUTES должны быть числами.") from exc
 
     scan_roots = parse_paths(os.environ.get("ACTIVITY_SCAN_ROOTS", DEFAULT_SCAN_ROOTS))
     exclude_dirs = DEFAULT_EXCLUDE_DIRS | parse_csv_set(os.environ.get("ACTIVITY_EXCLUDE_DIRS", ""))
@@ -222,10 +232,10 @@ def get_settings() -> Settings:
         activity_max_chars_per_file=activity_max_chars_per_file,
         activity_max_total_chars=activity_max_total_chars,
         spontaneous_enabled=spontaneous_enabled,
-        spontaneous_min_pause_hours=spontaneous_min_pause_hours,
+        spontaneous_min_pause_minutes=spontaneous_min_pause_minutes,
         autopilot_enabled=autopilot_enabled,
         autopilot_posts_per_day=autopilot_posts_per_day,
-        autopilot_min_pause_hours=autopilot_min_pause_hours,
+        autopilot_min_pause_minutes=autopilot_min_pause_minutes,
     )
 
 
@@ -674,11 +684,11 @@ def write_last_any_post(kind: str, moment: datetime | None = None) -> None:
     write_state(state)
 
 
-def hours_since_last_post() -> float:
+def minutes_since_last_post() -> float:
     last = read_last_any_post_time()
     if last <= 0:
-        return 10_000.0
-    return max(0.0, (datetime.now().timestamp() - last) / 3600)
+        return 10_000_000.0
+    return max(0.0, (datetime.now().timestamp() - last) / 60)
 
 
 def is_probably_text(path: Path, max_probe_bytes: int = 4096) -> bool:
@@ -854,11 +864,11 @@ def mode_summary(settings: Settings, mode: str) -> str:
             Режим: Автогенерация
             Активен: {"да" if settings.active_mode == "autogen" else "нет"}
             Автоведение включено: {"да" if settings.autopilot_enabled else "нет"}
-            Минимальная пауза: {settings.autopilot_min_pause_hours}h
+            Минимальная пауза: {settings.autopilot_min_pause_minutes} мин
             Лимит автопостов в день: {settings.autopilot_posts_per_day}
             Постов сегодня: {posts["today"]}
             Постов всего: {posts["total"]}
-            С последнего поста прошло: {hours_since_last_post():.1f}h
+            С последнего поста прошло: {minutes_since_last_post():.1f} мин
             """
         ).strip()
     if mode == "tracking":
@@ -1447,8 +1457,8 @@ def command_env_check() -> int:
     print(f"Activity max files: {settings.activity_max_files}")
     print(f"Last post checkpoint: {checkpoint_label()}")
     print(f"Spontaneous enabled: {settings.spontaneous_enabled}")
-    print(f"Spontaneous min pause hours: {settings.spontaneous_min_pause_hours}")
-    print(f"Hours since last post: {hours_since_last_post():.1f}")
+    print(f"Spontaneous min pause minutes: {settings.spontaneous_min_pause_minutes}")
+    print(f"Minutes since last post: {minutes_since_last_post():.1f}")
     return 0
 
 
@@ -1497,8 +1507,8 @@ def command_doctor() -> int:
     print(f"Model: {settings.openai_model}")
     print(f"Channel: {settings.telegram_chat_id}")
     print(f"Checkpoint: {checkpoint_label()}")
-    print(f"Last post age: {hours_since_last_post():.1f}h")
-    print(f"Spontaneous: {settings.spontaneous_enabled}, min pause {settings.spontaneous_min_pause_hours}h")
+    print(f"Last post age: {minutes_since_last_post():.1f} min")
+    print(f"Spontaneous: {settings.spontaneous_enabled}, min pause {settings.spontaneous_min_pause_minutes} min")
     print(activity_digest(settings))
 
     if problems:
@@ -1547,11 +1557,11 @@ def command_maybe_post(args: argparse.Namespace) -> int:
         print("Skipped: spontaneous posting is disabled.")
         return 0
 
-    elapsed = hours_since_last_post()
-    if elapsed < settings.spontaneous_min_pause_hours and not args.force:
+    elapsed = minutes_since_last_post()
+    if elapsed < settings.spontaneous_min_pause_minutes and not args.force:
         print(
-            f"Skipped: last post was {elapsed:.1f}h ago; "
-            f"minimum pause is {settings.spontaneous_min_pause_hours}h."
+            f"Skipped: last post was {elapsed:.1f} min ago; "
+            f"minimum pause is {settings.spontaneous_min_pause_minutes} min."
         )
         return 0
 
@@ -1665,10 +1675,10 @@ def command_autopilot(args: argparse.Namespace) -> int:
         print("Skipped: автоведение выключено (AUTOPILOT_ENABLED=false).")
         return 0
 
-    elapsed = hours_since_last_post()
-    min_pause = settings.autopilot_min_pause_hours
+    elapsed = minutes_since_last_post()
+    min_pause = settings.autopilot_min_pause_minutes
     if elapsed < min_pause and not args.force:
-        print(f"Skipped: последний пост был {elapsed:.1f}h назад; пауза автоведения {min_pause}h.")
+        print(f"Skipped: последний пост был {elapsed:.1f} мин назад; пауза автоведения {min_pause} мин.")
         return 0
 
     today_count = autopilot_posts_today()
