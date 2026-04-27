@@ -86,6 +86,7 @@ class TgAutoTui:
             ("Свободный preview", self.generate_free_preview),
             ("Пост по теме", self.topic_post_menu),
             ("Память канала", self.show_memory),
+            ("Автоведение канала", self.autopilot_menu),
             ("Maybe-post сейчас", self.maybe_post_now),
             ("Опубликовать сейчас", self.publish_now),
             ("Установить команду tgauto", self.install_command),
@@ -162,6 +163,9 @@ class TgAutoTui:
             f"POST_TEMPERATURE: {env.get('POST_TEMPERATURE', '0.8')}",
             f"SPONTANEOUS_ENABLED: {env.get('SPONTANEOUS_ENABLED', 'true')}",
             f"SPONTANEOUS_MIN_PAUSE_HOURS: {env.get('SPONTANEOUS_MIN_PAUSE_HOURS', '6')}",
+            f"AUTOPILOT_ENABLED: {env.get('AUTOPILOT_ENABLED', 'false')}",
+            f"AUTOPILOT_POSTS_PER_DAY: {env.get('AUTOPILOT_POSTS_PER_DAY', '2')}",
+            f"AUTOPILOT_MIN_PAUSE_HOURS: {env.get('AUTOPILOT_MIN_PAUSE_HOURS', '4')}",
             f"Hours since last post: {core.hours_since_last_post():.1f}",
             "",
             "Команда `python3 -m daily_poster context` покажет тот же контекст вне TUI.",
@@ -244,6 +248,9 @@ class TgAutoTui:
             ("POST_TEMPERATURE", False),
             ("SPONTANEOUS_ENABLED", False),
             ("SPONTANEOUS_MIN_PAUSE_HOURS", False),
+            ("AUTOPILOT_ENABLED", False),
+            ("AUTOPILOT_POSTS_PER_DAY", False),
+            ("AUTOPILOT_MIN_PAUSE_HOURS", False),
         ]
 
         for key, secret in fields:
@@ -572,6 +579,75 @@ class TgAutoTui:
             text = f"Error: {exc}"
         self.show_text(stdscr, text.splitlines())
 
+    def autopilot_menu(self, stdscr: curses.window) -> None:
+        while True:
+            env = read_env()
+            lines = [
+                "Автоведение канала",
+                "",
+                f"Включено: {env.get('AUTOPILOT_ENABLED', 'false')}",
+                f"Постов в день: {env.get('AUTOPILOT_POSTS_PER_DAY', '2')}",
+                f"Минимальная пауза: {env.get('AUTOPILOT_MIN_PAUSE_HOURS', '4')}h",
+                "",
+                "1. Настроить параметры",
+                "2. Синхронизировать память из Telegram updates",
+                "3. Preview автопоста",
+                "4. Запустить автоведение сейчас",
+                "5. Установить launchd-агент",
+                "6. Назад",
+            ]
+            stdscr.erase()
+            h, w = stdscr.getmaxyx()
+            for idx, line in enumerate(lines):
+                if idx + 1 >= h - 2:
+                    break
+                stdscr.addstr(idx + 1, 2, line[: w - 4])
+            self.draw_footer(stdscr)
+            key = stdscr.getch()
+            if key == ord("1"):
+                env["AUTOPILOT_ENABLED"] = self.prompt(stdscr, f"Включено true/false [{env.get('AUTOPILOT_ENABLED', 'false')}]: ") or env.get("AUTOPILOT_ENABLED", "false")
+                env["AUTOPILOT_POSTS_PER_DAY"] = self.prompt(stdscr, f"Постов в день [{env.get('AUTOPILOT_POSTS_PER_DAY', '2')}]: ") or env.get("AUTOPILOT_POSTS_PER_DAY", "2")
+                env["AUTOPILOT_MIN_PAUSE_HOURS"] = self.prompt(stdscr, f"Минимальная пауза, часы [{env.get('AUTOPILOT_MIN_PAUSE_HOURS', '4')}]: ") or env.get("AUTOPILOT_MIN_PAUSE_HOURS", "4")
+                write_env(env)
+                self.message = "Параметры автоведения обновлены."
+            elif key == ord("2"):
+                self.run_cli_and_show(stdscr, ["sync-channel"])
+            elif key == ord("3"):
+                self.run_cli_and_show(stdscr, ["autopilot", "--preview", "--save", "--force"])
+            elif key == ord("4"):
+                confirm = self.prompt(stdscr, "Запустить автоведение сейчас? Напиши YES: ")
+                if confirm == "YES":
+                    self.run_cli_and_show(stdscr, ["autopilot"])
+                else:
+                    self.message = "Запуск автоведения отменен."
+            elif key == ord("5"):
+                source = core.PROJECT_ROOT / "automation" / "com.codex.autopilot.plist"
+                if source.exists():
+                    AUTOPILOT_AGENT_PATH.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(source, AUTOPILOT_AGENT_PATH)
+                    reload_launch_agent(AUTOPILOT_AGENT_PATH)
+                    self.message = "Launchd-агент автоведения установлен."
+                else:
+                    self.message = f"Не найден шаблон: {source}"
+            elif key in (ord("6"), ord("q"), 27):
+                return
+
+    def run_cli_and_show(self, stdscr: curses.window, args: list[str]) -> None:
+        try:
+            result = subprocess.run(
+                ["/usr/bin/python3", "-m", "daily_poster", *args],
+                cwd=str(core.PROJECT_ROOT),
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=240,
+            )
+            output = (result.stdout + "\n" + result.stderr).strip()
+            self.message = "Команда выполнена." if result.returncode == 0 else "Команда завершилась с ошибкой."
+            self.show_text(stdscr, output.splitlines() or ["Нет вывода."])
+        except Exception as exc:  # noqa: BLE001
+            self.message = f"Команда не выполнена: {exc}"
+
     def maybe_post_now(self, stdscr: curses.window) -> None:
         answer = self.prompt(stdscr, "Run maybe-post now? Type YES: ")
         if answer != "YES":
@@ -700,6 +776,9 @@ def write_env(values: dict[str, str]) -> None:
         "POST_TEMPERATURE",
         "SPONTANEOUS_ENABLED",
         "SPONTANEOUS_MIN_PAUSE_HOURS",
+        "AUTOPILOT_ENABLED",
+        "AUTOPILOT_POSTS_PER_DAY",
+        "AUTOPILOT_MIN_PAUSE_HOURS",
         "ACTIVITY_SCAN_ROOTS",
         "ACTIVITY_EXCLUDE_DIRS",
         "ACTIVITY_MAX_FILES",
@@ -713,6 +792,9 @@ def write_env(values: dict[str, str]) -> None:
         "POST_TEMPERATURE": "0.8",
         "SPONTANEOUS_ENABLED": "true",
         "SPONTANEOUS_MIN_PAUSE_HOURS": "6",
+        "AUTOPILOT_ENABLED": "false",
+        "AUTOPILOT_POSTS_PER_DAY": "2",
+        "AUTOPILOT_MIN_PAUSE_HOURS": "4",
         "ACTIVITY_SCAN_ROOTS": core.DEFAULT_SCAN_ROOTS,
         "ACTIVITY_EXCLUDE_DIRS": "node_modules,.git,.venv,venv,__pycache__,Library",
         "ACTIVITY_MAX_FILES": "80",
@@ -733,8 +815,11 @@ def write_env(values: dict[str, str]) -> None:
     lines.extend(["", "# Spontaneous posting"])
     for key in ("SPONTANEOUS_ENABLED", "SPONTANEOUS_MIN_PAUSE_HOURS"):
         lines.append(f"{key}={merged.get(key, '')}")
+    lines.extend(["", "# Channel autopilot"])
+    for key in ("AUTOPILOT_ENABLED", "AUTOPILOT_POSTS_PER_DAY", "AUTOPILOT_MIN_PAUSE_HOURS"):
+        lines.append(f"{key}={merged.get(key, '')}")
     lines.extend(["", "# Daily activity scan"])
-    for key in ordered_keys[9:]:
+    for key in ordered_keys[12:]:
         lines.append(f"{key}={merged.get(key, '')}")
     core.ENV_PATH.write_text("\n".join(lines) + "\n", encoding="utf-8")
 

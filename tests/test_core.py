@@ -26,6 +26,9 @@ def make_settings(root: Path) -> core.Settings:
         activity_max_total_chars=60000,
         spontaneous_enabled=True,
         spontaneous_min_pause_hours=6,
+        autopilot_enabled=False,
+        autopilot_posts_per_day=2,
+        autopilot_min_pause_hours=4,
     )
 
 

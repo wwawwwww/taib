@@ -32,6 +32,7 @@ DEBUG_DIR = PROJECT_ROOT / "data" / "debug"
 
 OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses"
 TELEGRAM_SEND_MESSAGE_URL = "https://api.telegram.org/bot{token}/sendMessage"
+TELEGRAM_GET_UPDATES_URL = "https://api.telegram.org/bot{token}/getUpdates"
 TELEGRAM_MAX_MESSAGE_CHARS = 4096
 DEFAULT_SCAN_ROOTS = "~/Documents,~/Desktop,~/Downloads"
 DEFAULT_EXCLUDE_DIRS = {
@@ -143,6 +144,9 @@ class Settings:
     activity_max_total_chars: int
     spontaneous_enabled: bool
     spontaneous_min_pause_hours: int
+    autopilot_enabled: bool
+    autopilot_posts_per_day: int
+    autopilot_min_pause_hours: int
 
 
 def load_dotenv(path: Path) -> None:
@@ -190,12 +194,15 @@ def get_settings() -> Settings:
         activity_max_chars_per_file = int(os.environ.get("ACTIVITY_MAX_CHARS_PER_FILE", "6000"))
         activity_max_total_chars = int(os.environ.get("ACTIVITY_MAX_TOTAL_CHARS", "60000"))
         spontaneous_min_pause_hours = int(os.environ.get("SPONTANEOUS_MIN_PAUSE_HOURS", "6"))
+        autopilot_posts_per_day = int(os.environ.get("AUTOPILOT_POSTS_PER_DAY", "2"))
+        autopilot_min_pause_hours = int(os.environ.get("AUTOPILOT_MIN_PAUSE_HOURS", "4"))
     except ValueError as exc:
         raise ConfigError("ACTIVITY_* и SPONTANEOUS_MIN_PAUSE_HOURS должны быть числами.") from exc
 
     scan_roots = parse_paths(os.environ.get("ACTIVITY_SCAN_ROOTS", DEFAULT_SCAN_ROOTS))
     exclude_dirs = DEFAULT_EXCLUDE_DIRS | parse_csv_set(os.environ.get("ACTIVITY_EXCLUDE_DIRS", ""))
     spontaneous_enabled = parse_bool(os.environ.get("SPONTANEOUS_ENABLED", "true"))
+    autopilot_enabled = parse_bool(os.environ.get("AUTOPILOT_ENABLED", "false"))
 
     return Settings(
         openai_api_key=os.environ["OPENAI_API_KEY"],
@@ -212,6 +219,9 @@ def get_settings() -> Settings:
         activity_max_total_chars=activity_max_total_chars,
         spontaneous_enabled=spontaneous_enabled,
         spontaneous_min_pause_hours=spontaneous_min_pause_hours,
+        autopilot_enabled=autopilot_enabled,
+        autopilot_posts_per_day=autopilot_posts_per_day,
+        autopilot_min_pause_hours=autopilot_min_pause_hours,
     )
 
 
@@ -416,6 +426,29 @@ def make_generation_input(
             Напиши пост строго на эту тему, на русском языке, от первого лица, как Артем.
             Развей мысль так, чтобы это было похоже на живой авторский пост в канал, а не на ответ ассистента.
             Не упоминай промпт, тему как техническое задание, бота, модель, файлы или автоматизацию.
+            Верни только текст поста, без пояснений.
+            """
+        ).strip()
+    if mode == "autopilot":
+        return textwrap.dedent(
+            f"""
+            Сегодня: {today}
+            Язык поста: {settings.post_language}
+            Максимальная длина: {settings.post_max_chars} символов.
+
+            Редакционная политика:
+            {editorial_prompt}
+
+            Недавние посты, чтобы не повторяться:
+            {recent_block}
+
+            {memory_block}
+
+            Режим: автоведение канала.
+            Напиши самостоятельный пост в манере канала, опираясь на локальную память, частые темы и последние смысловые следы.
+            Пост должен выглядеть так, будто автор сам решил написать мысль, а не будто система выполняет расписание.
+            Не упоминай автоведение, память, историю, бота, модель, файлы, автоматизацию или то, что ты имитируешь стиль.
+            Не копируй старые посты; продолжай линию канала новым маленьким наблюдением.
             Верни только текст поста, без пояснений.
             """
         ).strip()
@@ -989,6 +1022,24 @@ def post_json(url: str, payload: dict[str, Any], headers: dict[str, str] | None 
     return parsed
 
 
+def get_json(url: str, params: dict[str, Any]) -> dict[str, Any]:
+    query = urllib.parse.urlencode(params)
+    request = urllib.request.Request(f"{url}?{query}", method="GET")
+    try:
+        with urllib.request.urlopen(request, timeout=60) as response:
+            data = response.read().decode("utf-8")
+    except urllib.error.HTTPError as exc:
+        details = exc.read().decode("utf-8", errors="replace")
+        raise ApiError(f"HTTP {exc.code}: {details}") from exc
+    except urllib.error.URLError as exc:
+        raise ApiError(f"Ошибка сети: {exc.reason}") from exc
+
+    try:
+        return json.loads(data)
+    except json.JSONDecodeError as exc:
+        raise ApiError(f"API вернул не JSON: {data[:500]}") from exc
+
+
 def extract_response_text(response: dict[str, Any]) -> str:
     output_text = response.get("output_text")
     if isinstance(output_text, str) and output_text.strip():
@@ -1061,6 +1112,8 @@ def generate_post(settings: Settings, mode: str = "activity", topic: str | None 
         activity_context = build_activity_context(settings)
     elif mode == "topic":
         activity_context = topic or ""
+    elif mode in {"free", "autopilot"}:
+        activity_context = "Свободный пост без файлового контекста."
     else:
         activity_context = "Свободный пост без файлового контекста."
     prompt = make_generation_input(settings, editorial_prompt, read_recent_posts(), activity_context, mode=mode)
@@ -1114,6 +1167,73 @@ def send_to_telegram(settings: Settings, text: str) -> dict[str, Any]:
     if not response.get("ok"):
         raise ApiError(f"Telegram API вернул ошибку: {json.dumps(response, ensure_ascii=False)}")
     return response
+
+
+def telegram_chat_matches(chat: dict[str, Any], settings: Settings) -> bool:
+    chat_id = settings.telegram_chat_id
+    if str(chat.get("id")) == chat_id:
+        return True
+    username = chat.get("username")
+    return isinstance(username, str) and chat_id.lower() == f"@{username.lower()}"
+
+
+def sync_channel_memory(settings: Settings) -> int:
+    state = read_state()
+    offset = int(state.get("telegram_update_offset", 0) or 0)
+    url = TELEGRAM_GET_UPDATES_URL.format(token=urllib.parse.quote(settings.telegram_bot_token))
+    response = get_json(
+        url,
+        {
+            "offset": offset,
+            "timeout": 0,
+            "allowed_updates": json.dumps(["channel_post", "edited_channel_post"]),
+        },
+    )
+    if not response.get("ok"):
+        raise ApiError(f"Telegram getUpdates вернул ошибку: {json.dumps(response, ensure_ascii=False)}")
+
+    imported = 0
+    max_update_id = offset - 1
+    for update in response.get("result", []):
+        if not isinstance(update, dict):
+            continue
+        update_id = update.get("update_id")
+        if isinstance(update_id, int):
+            max_update_id = max(max_update_id, update_id)
+        post = update.get("channel_post") or update.get("edited_channel_post")
+        if not isinstance(post, dict):
+            continue
+        chat = post.get("chat")
+        if not isinstance(chat, dict) or not telegram_chat_matches(chat, settings):
+            continue
+        text = post.get("text") or post.get("caption")
+        if not isinstance(text, str) or not text.strip():
+            continue
+        update_memory(text.strip(), kind="channel")
+        imported += 1
+
+    if max_update_id >= offset:
+        state["telegram_update_offset"] = max_update_id + 1
+        write_state(state)
+    return imported
+
+
+def autopilot_posts_today() -> int:
+    today = date.today().isoformat()
+    count = 0
+    if not HISTORY_PATH.exists():
+        return 0
+    for row in HISTORY_PATH.read_text(encoding="utf-8").splitlines():
+        try:
+            item = json.loads(row)
+        except json.JSONDecodeError:
+            continue
+        if item.get("kind") != "autopilot":
+            continue
+        created_at = str(item.get("created_at", ""))
+        if created_at.startswith(today):
+            count += 1
+    return count
 
 
 def ensure_dirs() -> None:
@@ -1338,6 +1458,52 @@ def command_memory() -> int:
     return 0
 
 
+def command_sync_channel() -> int:
+    settings = get_settings()
+    imported = sync_channel_memory(settings)
+    print(f"Импортировано новых постов из Telegram updates: {imported}")
+    return 0
+
+
+def command_autopilot(args: argparse.Namespace) -> int:
+    settings = get_settings()
+    imported = sync_channel_memory(settings)
+    if imported:
+        print(f"Синхронизировал память канала: +{imported} постов.")
+
+    if not settings.autopilot_enabled and not args.force:
+        print("Skipped: автоведение выключено (AUTOPILOT_ENABLED=false).")
+        return 0
+
+    elapsed = hours_since_last_post()
+    min_pause = settings.autopilot_min_pause_hours
+    if elapsed < min_pause and not args.force:
+        print(f"Skipped: последний пост был {elapsed:.1f}h назад; пауза автоведения {min_pause}h.")
+        return 0
+
+    today_count = autopilot_posts_today()
+    if today_count >= settings.autopilot_posts_per_day and not args.force:
+        print(f"Skipped: лимит автоведения на сегодня исчерпан ({today_count}/{settings.autopilot_posts_per_day}).")
+        return 0
+
+    text = generate_post(settings, mode="autopilot")
+    if args.preview:
+        print(text)
+        print(f"\n---\nСимволов: {len(text)}")
+        if args.save:
+            path = save_draft(text)
+            print(f"Черновик сохранен: {path}")
+        return 0
+
+    response = send_to_telegram(settings, text)
+    append_history(text, response, kind="autopilot")
+    update_memory(text, kind="autopilot")
+    write_last_any_post("autopilot")
+    message_id = response.get("result", {}).get("message_id", "unknown")
+    print(f"Опубликовано (autopilot). Telegram message_id: {message_id}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="python3 -m daily_poster",
@@ -1364,6 +1530,12 @@ def build_parser() -> argparse.ArgumentParser:
     topic_post.add_argument("--save", action="store_true", help="Save preview to data/drafts.")
     topic_post.set_defaults(func=command_topic_post)
 
+    autopilot = subparsers.add_parser("autopilot", help="Run channel autopilot once, respecting configured limits.")
+    autopilot.add_argument("--force", action="store_true", help="Ignore enabled/pause/daily-limit checks.")
+    autopilot.add_argument("--preview", action="store_true", help="Generate autopilot post without publishing.")
+    autopilot.add_argument("--save", action="store_true", help="Save preview to data/drafts.")
+    autopilot.set_defaults(func=command_autopilot)
+
     send_file = subparsers.add_parser("send-file", help="Publish text from a local markdown/text file.")
     send_file.add_argument("path", help="Path to the file with post text.")
     send_file.set_defaults(func=command_send_file)
@@ -1376,6 +1548,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     memory = subparsers.add_parser("memory", help="Show local channel memory.")
     memory.set_defaults(func=lambda _args: command_memory())
+
+    sync_channel = subparsers.add_parser("sync-channel", help="Import new channel posts from Telegram updates into memory.")
+    sync_channel.set_defaults(func=lambda _args: command_sync_channel())
 
     doctor = subparsers.add_parser("doctor", help="Run a local configuration and activity health check.")
     doctor.set_defaults(func=lambda _args: command_doctor())

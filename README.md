@@ -175,6 +175,8 @@ python3 -m daily_poster preview
 python3 -m daily_poster preview --save
 python3 -m daily_poster publish
 python3 -m daily_poster maybe-post
+python3 -m daily_poster autopilot --preview --save
+python3 -m daily_poster sync-channel
 python3 -m daily_poster topic-post "Трейты в Scala" --preview --save
 python3 -m daily_poster memory
 python3 -m daily_poster send-file path/to/post.md
@@ -194,6 +196,7 @@ python3 -m daily_poster env-check
 - написать тему/мысль и получить пост по ней;
 - посмотреть локальную память канала;
 - запустить maybe-post: свободный или рабочий пост с учетом минимальной паузы;
+- настроить автоведение канала: лимит постов в день, паузу, sync памяти и launchd-агент;
 - опубликовать отчет прямо сейчас;
 - настроить канал Telegram.
 
@@ -228,6 +231,9 @@ source ~/.zshrc
 - `python3 -m daily_poster doctor` проверяет основные настройки и предупреждает о шумных/дорогих сценариях.
 - `python3 -m daily_poster mark-checkpoint` помечает текущие файлы как уже учтенные без публикации.
 - `python3 -m daily_poster maybe-post` может опубликовать рабочий или свободный авторский пост, но уважает `SPONTANEOUS_MIN_PAUSE_HOURS`.
+- `python3 -m daily_poster autopilot --preview --save` генерирует черновик автопоста в стиле канала.
+- `python3 -m daily_poster autopilot` запускает автоведение один раз с учетом лимитов.
+- `python3 -m daily_poster sync-channel` импортирует новые Telegram `channel_post` updates в локальную память.
 - `python3 -m daily_poster topic-post "моя мысль" --preview --save` делает пост по твоей теме без публикации.
 - `python3 -m daily_poster topic-post "моя мысль"` публикует пост по теме сразу.
 - `python3 -m daily_poster memory` показывает локальную память канала.
@@ -242,6 +248,16 @@ SPONTANEOUS_MIN_PAUSE_HOURS=6
 ```
 
 Фоновый агент `automation/com.codex.maybe-poster.plist` раз в час запускает `maybe-post`. Сам `maybe-post` не обязан публиковать каждый раз: он проверяет паузу, активность и иногда решает промолчать.
+
+Автоведение канала настраивается в `.env`:
+
+```bash
+AUTOPILOT_ENABLED=false
+AUTOPILOT_POSTS_PER_DAY=2
+AUTOPILOT_MIN_PAUSE_HOURS=4
+```
+
+Фоновый агент `automation/com.codex.autopilot.plist` раз в час запускает `autopilot`. Он не публикует сверх лимита и не нарушает минимальную паузу. Telegram Bot API не отдает старую историю канала задним числом, поэтому `sync-channel` импортирует только новые `channel_post` updates, которые бот получает после настройки. Старую историю можно добавить через локальную `data/posts.jsonl`/`data/memory.json` или экспортом.
 
 Посты по теме можно задавать на русском:
 
