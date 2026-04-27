@@ -85,6 +85,7 @@ DEFAULT_EXCLUDE_SUFFIXES = {
     ".zip",
 }
 LOW_SIGNAL_KINDS = {"download", "binary"}
+CHANNEL_BASIS_KINDS = {"imported", "channel"}
 CODE_SUFFIXES = {
     ".c",
     ".cc",
@@ -350,21 +351,25 @@ def history_items(preferred_kinds: tuple[str, ...] | None = None) -> list[dict[s
     return filtered or items
 
 
+def default_memory() -> dict[str, Any]:
+    return {
+        "topics": {},
+        "recent_posts": [],
+        "style_notes": [
+            "Писать от первого лица, живо и без упоминания автоматизации.",
+            "Не начинать каждый пост одинаково.",
+        ],
+    }
+
+
 def read_memory() -> dict[str, Any]:
     if not MEMORY_PATH.exists():
-        return {
-            "topics": {},
-            "recent_posts": [],
-            "style_notes": [
-                "Писать от первого лица, живо и без упоминания автоматизации.",
-                "Не начинать каждый пост одинаково.",
-            ],
-        }
+        return default_memory()
     try:
         memory = json.loads(MEMORY_PATH.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
-        return {"topics": {}, "recent_posts": [], "style_notes": []}
-    return memory if isinstance(memory, dict) else {"topics": {}, "recent_posts": [], "style_notes": []}
+        return default_memory()
+    return memory if isinstance(memory, dict) else default_memory()
 
 
 def write_memory(memory: dict[str, Any]) -> None:
@@ -595,9 +600,37 @@ def load_posts_for_import(path: Path) -> list[str]:
     return split_plaintext_posts(text)
 
 
-def import_channel_history(path: Path) -> tuple[int, int]:
+def rewrite_history_excluding_kinds(kinds: set[str]) -> int:
+    if not HISTORY_PATH.exists():
+        return 0
+    kept: list[str] = []
+    removed = 0
+    for row in HISTORY_PATH.read_text(encoding="utf-8").splitlines():
+        try:
+            item = json.loads(row)
+        except json.JSONDecodeError:
+            kept.append(row)
+            continue
+        if isinstance(item, dict) and str(item.get("kind", "")) in kinds:
+            removed += 1
+            continue
+        kept.append(row)
+    ensure_dirs()
+    HISTORY_PATH.write_text(("\n".join(kept) + "\n") if kept else "", encoding="utf-8")
+    return removed
+
+
+def reset_channel_basis() -> int:
+    removed = rewrite_history_excluding_kinds(CHANNEL_BASIS_KINDS)
+    write_memory(default_memory())
+    return removed
+
+
+def import_channel_history(path: Path, replace: bool = True) -> tuple[int, int]:
     sources = iter_import_sources(path)
-    existing = {text.strip() for text in history_texts()}
+    if replace:
+        reset_channel_basis()
+    existing: set[str] = set()
     imported = 0
     skipped = 0
     for source in sources:
@@ -965,6 +998,8 @@ def posts_stats() -> dict[str, Any]:
         except json.JSONDecodeError:
             continue
         kind = str(item.get("kind", "unknown"))
+        if kind in CHANNEL_BASIS_KINDS:
+            continue
         stats["total"] += 1
         stats["by_kind"][kind] = stats["by_kind"].get(kind, 0) + 1
         created_at = str(item.get("created_at", ""))
@@ -1784,8 +1819,9 @@ def command_sync_channel() -> int:
 def command_import_history(args: argparse.Namespace) -> int:
     path = Path(args.path).expanduser().resolve()
     imported, skipped = import_channel_history(path)
-    print(f"Импортировано старых постов: {imported}")
-    print(f"Пропущено дублей: {skipped}")
+    print("База канала обновлена.")
+    print(f"Загружено постов для стиля: {imported}")
+    print(f"Пропущено дублей внутри импорта: {skipped}")
     return 0
 
 
@@ -1879,8 +1915,8 @@ def build_parser() -> argparse.ArgumentParser:
     sync_channel = subparsers.add_parser("sync-channel", help="Import new channel posts from Telegram updates into memory.")
     sync_channel.set_defaults(func=lambda _args: command_sync_channel())
 
-    import_history = subparsers.add_parser("import-history", help="Import old channel posts from a local file into memory.")
-    import_history.add_argument("path", help="Path to .txt, .md, .json, or .jsonl with historical posts.")
+    import_history = subparsers.add_parser("import-history", help="Replace the channel style basis from a Telegram export.")
+    import_history.add_argument("path", help="Path to a .txt, .md, .json, .jsonl, .html/.htm file or a folder with exports.")
     import_history.set_defaults(func=command_import_history)
 
     doctor = subparsers.add_parser("doctor", help="Run a local configuration and activity health check.")

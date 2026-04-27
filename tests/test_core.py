@@ -243,6 +243,52 @@ class CoreBehaviorTests(unittest.TestCase):
             self.assertIn("Второй\nHTML пост", recent)
             self.assertIn("Третий HTML пост", recent)
 
+    def test_import_channel_history_replaces_previous_basis(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            history = root / "posts.jsonl"
+            memory = root / "memory.json"
+            first = root / "first.json"
+            second = root / "second.json"
+            first.write_text('{"messages":[{"text":"Старый голос канала"}]}', encoding="utf-8")
+            second.write_text('{"messages":[{"text":"Новая база канала"}]}', encoding="utf-8")
+
+            with patch.object(core, "HISTORY_PATH", history), patch.object(core, "MEMORY_PATH", memory):
+                first_imported, _ = core.import_channel_history(first)
+                second_imported, _ = core.import_channel_history(second)
+                recent = core.read_recent_posts(limit=10, preferred_kinds=("imported", "channel"))
+                context = core.memory_context()
+
+            self.assertEqual(first_imported, 1)
+            self.assertEqual(second_imported, 1)
+            self.assertNotIn("Старый голос канала", recent)
+            self.assertIn("Новая база канала", recent)
+            self.assertNotIn("Старый голос канала", context)
+            self.assertIn("Новая база канала", context)
+
+    def test_posts_stats_ignores_channel_basis_posts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            history = Path(tmp) / "posts.jsonl"
+            today = core.date.today().isoformat()
+            history.write_text(
+                "\n".join(
+                    [
+                        f'{{"created_at":"{today}T10:00:00","kind":"imported","text":"архив"}}',
+                        f'{{"created_at":"{today}T11:00:00","kind":"channel","text":"канал"}}',
+                        f'{{"created_at":"{today}T12:00:00","kind":"autopilot","text":"живой пост"}}',
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            with patch.object(core, "HISTORY_PATH", history):
+                stats = core.posts_stats()
+
+            self.assertEqual(stats["today"], 1)
+            self.assertEqual(stats["total"], 1)
+            self.assertEqual(stats["by_kind"], {"autopilot": 1})
+
     def test_choose_maybe_post_mode_in_autogen_ignores_activity_context(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             settings = make_settings(Path(tmp))

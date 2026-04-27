@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import plistlib
 import shutil
+import signal
 import subprocess
 import sys
 import platform
@@ -109,6 +110,11 @@ class TgAutoTui:
                 "Канал, модель, prompt, расписание и технические параметры продукта.",
                 self.settings_hub,
             ),
+            (
+                "Остановить бота",
+                "Выключить режимы, снять фоновые агенты и завершить процессы публикации.",
+                self.stop_bot_menu,
+            ),
         ]
 
         while True:
@@ -131,7 +137,7 @@ class TgAutoTui:
         h, w = stdscr.getmaxyx()
         title = "tgauto - авторский Telegram-бот"
         stdscr.addstr(1, 2, title[: w - 4], curses.color_pair(1) | curses.A_BOLD)
-        stdscr.addstr(2, 2, "Четыре понятных режима: выбери раздел, Enter — открыть, q — выйти."[: w - 4])
+        stdscr.addstr(2, 2, "Основные действия: выбери раздел, Enter — открыть, q — выйти."[: w - 4])
 
         status = self.status_line()
         stdscr.addstr(4, 2, status[: w - 4], curses.color_pair(2))
@@ -182,14 +188,11 @@ class TgAutoTui:
             lines.extend(
                 [
                     "",
-                    "1. Включить этот режим",
-                    "2. Настроить автогенерацию",
-                    "3. Preview автопоста",
-                    "4. Запустить автопост сейчас",
-                    "5. Синхронизировать память канала",
-                    "6. Импортировать старые посты из файла",
-                    "7. Память канала",
-                    "8. Назад",
+                    "1. Включить автогенерацию",
+                    "2. Настроить частоту",
+                    "3. База канала",
+                    "4. Опубликовать сейчас",
+                    "5. Назад",
                 ]
             )
             self.show_option_screen(stdscr, lines)
@@ -199,20 +202,14 @@ class TgAutoTui:
             elif key == ord("2"):
                 self.configure_autogen(stdscr)
             elif key == ord("3"):
-                self.run_cli_and_show(stdscr, ["autopilot", "--preview", "--save", "--force"])
+                self.import_history_menu(stdscr)
             elif key == ord("4"):
                 answer = self.prompt(stdscr, "Запустить автопост сейчас? Напиши YES: ")
                 if answer == "YES":
                     self.run_cli_and_show(stdscr, ["autopilot", "--force"])
                 else:
                     self.message = "Автопост отменен."
-            elif key == ord("5"):
-                self.run_cli_and_show(stdscr, ["sync-channel"])
-            elif key == ord("6"):
-                self.import_history_menu(stdscr)
-            elif key == ord("7"):
-                self.show_memory(stdscr)
-            elif key in (ord("8"), ord("q"), 27):
+            elif key in (ord("5"), ord("q"), 27):
                 return
 
     def tracking_hub(self, stdscr: curses.window) -> None:
@@ -230,14 +227,11 @@ class TgAutoTui:
             lines.extend(
                 [
                     "",
-                    "1. Включить этот режим",
+                    "1. Включить отслеживание",
                     "2. Выбрать папки для отслеживания",
                     "3. Сводка активности",
-                    "4. Измененные файлы и diff",
-                    "5. Preview поста по контексту",
-                    "6. Опубликовать пост сейчас",
-                    "7. Зафиксировать текущий checkpoint",
-                    "8. Назад",
+                    "4. Опубликовать пост сейчас",
+                    "5. Назад",
                 ]
             )
             self.show_option_screen(stdscr, lines)
@@ -249,18 +243,12 @@ class TgAutoTui:
             elif key == ord("3"):
                 self.show_digest(stdscr)
             elif key == ord("4"):
-                self.changed_files_menu(stdscr)
-            elif key == ord("5"):
-                self.generate_preview(stdscr)
-            elif key == ord("6"):
                 answer = self.prompt(stdscr, "Опубликовать пост по контексту сейчас? Напиши YES: ")
                 if answer == "YES":
                     self.run_cli_and_show(stdscr, ["publish"])
                 else:
                     self.message = "Публикация отменена."
-            elif key == ord("7"):
-                self.mark_checkpoint_now(stdscr)
-            elif key in (ord("8"), ord("q"), 27):
+            elif key in (ord("5"), ord("q"), 27):
                 return
 
     def settings_hub(self, stdscr: curses.window) -> None:
@@ -274,11 +262,8 @@ class TgAutoTui:
                 "2. Канал и ключи",
                 "3. Модель и стоимость",
                 "4. Prompt автора",
-                "5. Расписание публикаций",
-                "6. Папки и лимиты отслеживания",
-                "7. Диагностика",
-                "8. Логи",
-                "9. Установить команду tgauto",
+                "5. Папки и лимиты отслеживания",
+                "6. Диагностика",
                 "0. Назад",
             ]
             self.show_option_screen(stdscr, lines)
@@ -292,17 +277,19 @@ class TgAutoTui:
             elif key == ord("4"):
                 self.edit_prompt(stdscr)
             elif key == ord("5"):
-                self.configure_schedule(stdscr)
-            elif key == ord("6"):
                 self.configure_tracking_limits(stdscr)
-            elif key == ord("7"):
+            elif key == ord("6"):
                 self.show_doctor(stdscr)
-            elif key == ord("8"):
-                self.view_logs(stdscr)
-            elif key == ord("9"):
-                self.install_command(stdscr)
             elif key in (ord("0"), ord("q"), 27):
                 return
+
+    def stop_bot_menu(self, stdscr: curses.window) -> None:
+        answer = self.prompt(stdscr, "Остановить все фоновые режимы и процессы бота? Напиши YES: ")
+        if answer != "YES":
+            self.message = "Остановка отменена."
+            return
+        killed = stop_all_bot_work()
+        self.message = f"Бот остановлен: режимы выключены, процессов завершено: {killed}."
 
     def mode_panel_lines(self, mode: str) -> list[str]:
         env = read_env()
@@ -404,13 +391,13 @@ class TgAutoTui:
         self.message = "Параметры отслеживания обновлены."
 
     def import_history_menu(self, stdscr: curses.window) -> None:
-        path = self.prompt(stdscr, "Путь к .txt/.md/.json/.jsonl с историей канала: ")
+        path = self.prompt(stdscr, "Путь к файлу или папке экспорта Telegram для базы канала: ")
         if not path.strip():
-            self.message = "Импорт истории отменен."
+            self.message = "Загрузка базы канала отменена."
             return
-        confirm = self.prompt(stdscr, "Импортировать посты в память канала? Напиши YES: ")
+        confirm = self.prompt(stdscr, "Заменить текущую базу канала этой историей? Напиши YES: ")
         if confirm != "YES":
-            self.message = "Импорт истории отменен."
+            self.message = "Загрузка базы канала отменена."
             return
         self.run_cli_and_show(stdscr, ["import-history", path.strip()])
 
@@ -765,17 +752,12 @@ class TgAutoTui:
         if not topic.strip():
             self.message = "Пост по теме отменен."
             return
-        action = self.prompt(stdscr, "Что сделать? preview или publish [preview]: ")
-        publish = action.strip().lower() == "publish"
-        if publish:
-            confirm = self.prompt(stdscr, "Опубликовать пост по теме сейчас? Напиши YES: ")
-            if confirm != "YES":
-                self.message = "Публикация поста по теме отменена."
-                return
+        confirm = self.prompt(stdscr, "Опубликовать пост по теме сейчас? Напиши YES: ")
+        if confirm != "YES":
+            self.message = "Публикация поста по теме отменена."
+            return
         try:
             args = [python_executable(), "-m", "daily_poster", "topic-post", topic]
-            if not publish:
-                args.extend(["--preview", "--save"])
             result = subprocess.run(
                 args,
                 cwd=str(core.PROJECT_ROOT),
@@ -1078,6 +1060,70 @@ def sync_mode_agents(mode: str) -> None:
         install_launch_agent(source, MAYBE_AGENT_PATH)
     elif mode == "tracking":
         unload_launch_agent(MAYBE_AGENT_PATH)
+
+
+def stop_all_bot_work() -> int:
+    env = read_env()
+    env["ACTIVE_MODE"] = "off"
+    env["AUTOPILOT_ENABLED"] = "false"
+    env["SPONTANEOUS_ENABLED"] = "false"
+    write_env(env)
+
+    for path in (LAUNCH_AGENT_PATH, MAYBE_AGENT_PATH, AUTOPILOT_AGENT_PATH):
+        unload_launch_agent(path)
+
+    return kill_bot_processes()
+
+
+def kill_bot_processes() -> int:
+    if IS_WINDOWS:
+        command = (
+            "$self=$PID; "
+            "Get-CimInstance Win32_Process | "
+            "Where-Object { $_.CommandLine -match 'daily_poster' -and "
+            "$_.CommandLine -notmatch 'daily_poster.tui' -and $_.ProcessId -ne $self } | "
+            "ForEach-Object { Stop-Process -Id $_.ProcessId -Force; $_.ProcessId }"
+        )
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-Command", command],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        return len([line for line in result.stdout.splitlines() if line.strip()])
+
+    try:
+        result = subprocess.run(["ps", "-axo", "pid=,command="], check=False, capture_output=True, text=True)
+    except OSError:
+        return 0
+
+    current_pid = os.getpid()
+    killed = 0
+    commands = (
+        "-m daily_poster autopilot",
+        "-m daily_poster maybe-post",
+        "-m daily_poster publish",
+        "-m daily_poster preview",
+        "-m daily_poster topic-post",
+        "-m daily_poster send-file",
+    )
+    for line in result.stdout.splitlines():
+        parts = line.strip().split(None, 1)
+        if len(parts) != 2:
+            continue
+        try:
+            pid = int(parts[0])
+        except ValueError:
+            continue
+        command = parts[1]
+        if pid == current_pid or not any(marker in command for marker in commands):
+            continue
+        try:
+            os.kill(pid, signal.SIGTERM)
+            killed += 1
+        except OSError:
+            continue
+    return killed
 
 
 def ensure_user_bin_in_zshrc() -> None:
