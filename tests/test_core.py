@@ -243,6 +243,14 @@ class CoreBehaviorTests(unittest.TestCase):
             self.assertIn("Второй\nHTML пост", recent)
             self.assertIn("Третий HTML пост", recent)
 
+    def test_choose_maybe_post_mode_in_autogen_ignores_activity_context(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = make_settings(Path(tmp))
+            settings = core.Settings(
+                **{**settings.__dict__, "active_mode": "autogen"}  # type: ignore[arg-type]
+            )
+            self.assertEqual(core.choose_maybe_post_mode(settings), "autopilot")
+
 
 if __name__ == "__main__":
     unittest.main()

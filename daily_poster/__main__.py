@@ -281,17 +281,35 @@ def read_prompt() -> str:
     return PROMPT_PATH.read_text(encoding="utf-8").strip()
 
 
-def read_recent_posts(limit: int = 8) -> list[str]:
+def read_recent_posts(limit: int = 8, preferred_kinds: tuple[str, ...] | None = None) -> list[str]:
     if not HISTORY_PATH.exists():
         return []
 
     rows = HISTORY_PATH.read_text(encoding="utf-8").splitlines()
-    posts: list[str] = []
-    for row in rows[-limit:]:
+    items: list[dict[str, Any]] = []
+    for row in rows:
         try:
             item = json.loads(row)
         except json.JSONDecodeError:
             continue
+        if not isinstance(item, dict):
+            continue
+        items.append(item)
+
+    selected: list[dict[str, Any]] = []
+    if preferred_kinds:
+        preferred = set(preferred_kinds)
+        preferred_items = [item for item in items if str(item.get("kind", "")) in preferred]
+        if len(preferred_items) >= limit:
+            selected = preferred_items[-limit:]
+        else:
+            remaining = [item for item in items if item not in preferred_items]
+            selected = preferred_items + remaining[-max(0, limit - len(preferred_items)):]
+    else:
+        selected = items
+
+    posts: list[str] = []
+    for item in selected[-limit:]:
         text = item.get("text")
         if isinstance(text, str) and text.strip():
             posts.append(text.strip())
@@ -311,6 +329,25 @@ def history_texts() -> list[str]:
         if isinstance(text, str) and text.strip():
             texts.append(text.strip())
     return texts
+
+
+def history_items(preferred_kinds: tuple[str, ...] | None = None) -> list[dict[str, Any]]:
+    if not HISTORY_PATH.exists():
+        return []
+    items: list[dict[str, Any]] = []
+    for row in HISTORY_PATH.read_text(encoding="utf-8").splitlines():
+        try:
+            item = json.loads(row)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(item, dict):
+            continue
+        items.append(item)
+    if not preferred_kinds:
+        return items
+    preferred = set(preferred_kinds)
+    filtered = [item for item in items if str(item.get("kind", "")) in preferred]
+    return filtered or items
 
 
 def read_memory() -> dict[str, Any]:
@@ -409,6 +446,27 @@ def memory_context() -> str:
         f"Стилевые заметки:\n{style_block}\n\n"
         f"Частые темы:\n{topics_block}\n\n"
         f"Последние смысловые следы постов:\n{recent_block}"
+    )
+
+
+def style_reference_context(preferred_kinds: tuple[str, ...] = ("imported", "channel"), limit: int = 12) -> str:
+    items = history_items(preferred_kinds)
+    texts: list[str] = []
+    for item in items[-limit:]:
+        text = item.get("text")
+        if isinstance(text, str) and text.strip():
+            texts.append(text.strip())
+    if not texts:
+        return "Истории канала пока нет."
+
+    keyword_source = "\n".join(texts[-8:])
+    keywords = keyword_candidates(keyword_source, limit=20)
+    keywords_block = ", ".join(keywords) if keywords else "(нет)"
+    posts_block = "\n\n---\n\n".join(texts[-6:])
+    return (
+        "Опорная история канала:\n"
+        f"Ключевые слова и ходы: {keywords_block}\n\n"
+        f"Примеры недавних постов канала:\n{posts_block}"
     )
 
 
@@ -570,6 +628,7 @@ def make_generation_input(
 ) -> str:
     recent_block = "\n\n---\n\n".join(recent_posts) if recent_posts else "Истории пока нет."
     memory_block = memory_context()
+    style_block = style_reference_context()
     today = datetime.now().strftime("%Y-%m-%d")
     if mode == "free":
         return textwrap.dedent(
@@ -578,22 +637,16 @@ def make_generation_input(
             Язык поста: {settings.post_language}
             Максимальная длина: {settings.post_max_chars} символов.
 
-            Редакционная политика:
-            {editorial_prompt}
-
-            Недавние посты, чтобы не повторяться:
-            {recent_block}
-
-            {memory_block}
-
-            Важно: недавние посты нужны только чтобы не повторяться. Не копируй их формулировки, особенно "ежедневный отчет", "по файлам видно", "чекпойнт", "файловая активность".
+            {style_block}
 
             Режим: свободный авторский пост.
-            Напиши короткий живой пост от первого лица, будто мысль сама дозрела и захотелось ей поделиться.
-            Можно писать про программирование, учебу, Scala, AI, продуктивность, маленькое наблюдение из работы или идею на будущее.
+            История канала выше - это главный ориентир. Держись ее манеры, длины, ритма, резкости или разговорности максимально близко.
+            Не уходи в программирование, Scala, AI, рабочие заметки или инженерные темы, если этого нет в истории канала.
+            Напиши короткий живой пост от первого лица, будто мысль сама дозрела и захотелось ей поделиться в уже существующий канал.
+            Возьми один мотив, одну новость, одну реакцию или один тип шутки. Не склеивай несколько старых постов в один.
             Не выдумывай конкретную сегодняшнюю работу, баги, тесты, задачи или файлы.
-            Лучше пиши как наблюдение: "Иногда в Scala...", "Есть странная ловушка...", "Мне нравится идея...".
             Не упоминай файлы, сканирование, бота, модель, автоматизацию, отчетность или то, что пост был сгенерирован.
+            Не копируй старые посты дословно, но будь максимально близок по голосу и типу мыслей.
             Верни только текст поста, без пояснений.
             """
         ).strip()
@@ -628,19 +681,17 @@ def make_generation_input(
             Язык поста: {settings.post_language}
             Максимальная длина: {settings.post_max_chars} символов.
 
-            Редакционная политика:
-            {editorial_prompt}
-
-            Недавние посты, чтобы не повторяться:
-            {recent_block}
-
-            {memory_block}
+            {style_block}
 
             Режим: автоведение канала.
+            История канала выше - главный источник голоса. Пиши так, будто это естественное продолжение уже существующего канала.
+            Максимально воспроизводи тон, ритм, тип подачи, длину абзацев, словарь и общий вайб канала, но не копируй старые посты дословно.
+            Если в истории канала нет кода, разработки, AI или учебных заметок - не тащи эти темы в новый пост.
             Напиши самостоятельный пост в манере канала, опираясь на локальную память, частые темы и последние смысловые следы.
+            Выбери одну тему, один сюжет или один эмоциональный угол. Не делай подборку и не склеивай несколько разных постов в один.
             Пост должен выглядеть так, будто автор сам решил написать мысль, а не будто система выполняет расписание.
             Не упоминай автоведение, память, историю, бота, модель, файлы, автоматизацию или то, что ты имитируешь стиль.
-            Не копируй старые посты; продолжай линию канала новым маленьким наблюдением.
+            Не копируй старые посты; продолжай линию канала новым, максимально органичным постом.
             Верни только текст поста, без пояснений.
             """
         ).strip()
@@ -1353,6 +1404,10 @@ def legacy_extract_response_text(response: dict[str, Any]) -> str:
 
 def generate_post(settings: Settings, mode: str = "activity", topic: str | None = None) -> str:
     editorial_prompt = read_prompt()
+    if mode in {"free", "autopilot"}:
+        recent_posts = read_recent_posts(limit=12, preferred_kinds=("imported", "channel", "autopilot", "free", "topic", "manual"))
+    else:
+        recent_posts = read_recent_posts()
     if mode == "activity":
         activity_context = build_activity_context(settings)
     elif mode == "topic":
@@ -1361,7 +1416,7 @@ def generate_post(settings: Settings, mode: str = "activity", topic: str | None 
         activity_context = "Свободный пост без файлового контекста."
     else:
         activity_context = "Свободный пост без файлового контекста."
-    prompt = make_generation_input(settings, editorial_prompt, read_recent_posts(), activity_context, mode=mode)
+    prompt = make_generation_input(settings, editorial_prompt, recent_posts, activity_context, mode=mode)
     payload = {
         "model": settings.openai_model,
         "instructions": "Ты опытный редактор Telegram-канала. Соблюдай редакционную политику строго.",
@@ -1612,6 +1667,8 @@ def command_preview(args: argparse.Namespace) -> int:
 
 
 def choose_maybe_post_mode(settings: Settings) -> str:
+    if settings.active_mode == "autogen":
+        return "autopilot"
     stats = activity_stats(settings)
     if int(stats["strong_files"]) > 0 and int(stats["score"]) >= 18:
         return "activity"
