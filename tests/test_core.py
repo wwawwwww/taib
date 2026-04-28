@@ -4,6 +4,7 @@ import tempfile
 import unittest
 import os
 import io
+import json
 from contextlib import redirect_stdout
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -41,6 +42,8 @@ def make_settings(root: Path) -> core.Settings:
         group_reply_probability=0.12,
         group_min_pause_seconds=90,
         group_context_messages=16,
+        group_mode="live",
+        group_live_min_messages=30,
     )
 
 
@@ -455,6 +458,7 @@ class CoreBehaviorTests(unittest.TestCase):
                     "group_target_user_id": "42",
                     "group_reply_probability": 1.0,
                     "group_min_pause_seconds": 0,
+                    "group_live_min_messages": 1,
                 }
             )
             updates = {
@@ -505,6 +509,136 @@ class CoreBehaviorTests(unittest.TestCase):
             self.assertEqual(sent_payloads[0]["chat_id"], -1001)
             self.assertEqual(sent_payloads[0]["reply_to_message_id"], 2)
             self.assertEqual(memory["style_profile"]["posts_analyzed"], 1)
+
+    def test_group_chat_live_waits_for_minimum_target_messages(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            settings = core.Settings(
+                **{
+                    **make_settings(root).__dict__,
+                    "active_mode": "group",
+                    "group_chat_enabled": True,
+                    "group_chat_id": "-1001",
+                    "group_target_user_id": "42",
+                    "group_reply_probability": 1.0,
+                    "group_min_pause_seconds": 0,
+                    "group_live_min_messages": 3,
+                }
+            )
+            updates = {
+                "ok": True,
+                "result": [
+                    {"update_id": 10, "message": {"message_id": 1, "chat": {"id": -1001}, "from": {"id": 42}, "text": "мой стиль"}},
+                    {"update_id": 11, "message": {"message_id": 2, "chat": {"id": -1001}, "from": {"id": 7}, "text": "ответишь?"}},
+                ],
+            }
+            sent_payloads: list[dict[str, object]] = []
+
+            with (
+                patch.object(core, "STATE_PATH", root / "state.json"),
+                patch.object(core, "GROUP_MEMORY_PATH", root / "group_memory.json"),
+                patch.object(core, "get_settings", return_value=settings),
+                patch.object(core, "get_json", return_value=updates),
+                patch.object(core, "post_json", side_effect=lambda _url, payload, headers=None: sent_payloads.append(payload) or {"ok": True}),
+            ):
+                with redirect_stdout(io.StringIO()):
+                    core.command_group_chat(argparse_namespace(force=False, reply_all=False))
+
+            self.assertEqual(sent_payloads, [])
+
+    def test_group_chat_archive_replies_without_live_target_match(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            group_memory = root / "group_memory.json"
+            memory = core.default_group_memory()
+            memory["target_participant"] = {"author_name": "Archive Person", "count": 5}
+            memory["style_profile"] = core.build_style_profile(["ну это сильно", "я бы так и сказал"])
+            group_memory.parent.mkdir(parents=True, exist_ok=True)
+            group_memory.write_text(json.dumps(memory, ensure_ascii=False), encoding="utf-8")
+            settings = core.Settings(
+                **{
+                    **make_settings(root).__dict__,
+                    "active_mode": "group",
+                    "group_chat_enabled": True,
+                    "group_mode": "archive",
+                    "group_chat_id": "-1001",
+                    "group_target_user_id": "",
+                    "group_target_username": "",
+                    "group_target_name": "",
+                    "group_reply_probability": 1.0,
+                    "group_min_pause_seconds": 0,
+                }
+            )
+            updates = {
+                "ok": True,
+                "result": [
+                    {"update_id": 11, "message": {"message_id": 2, "chat": {"id": -1001}, "from": {"id": 7}, "text": "ответишь?"}},
+                ],
+            }
+            sent_payloads: list[dict[str, object]] = []
+
+            def fake_post_json(url: str, payload: dict[str, object], headers: dict[str, str] | None = None) -> dict[str, object]:
+                if "api.openai.com" in url:
+                    return {"output_text": "ну да"}
+                sent_payloads.append(payload)
+                return {"ok": True, "result": {"message_id": 99}}
+
+            with (
+                patch.object(core, "STATE_PATH", root / "state.json"),
+                patch.object(core, "GROUP_MEMORY_PATH", group_memory),
+                patch.object(core, "get_settings", return_value=settings),
+                patch.object(core, "get_json", return_value=updates),
+                patch.object(core, "post_json", side_effect=fake_post_json),
+            ):
+                with redirect_stdout(io.StringIO()):
+                    core.command_group_chat(argparse_namespace(force=False, reply_all=False))
+
+            self.assertEqual(len(sent_payloads), 1)
+
+    def test_group_mode_settings_do_not_require_channel_id(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            env = Path(tmp) / ".env"
+            env.write_text(
+                "\n".join(
+                    [
+                        "OPENAI_API_KEY=test",
+                        "TELEGRAM_BOT_TOKEN=token",
+                        "ACTIVE_MODE=group",
+                        "GROUP_CHAT_ID=-1001",
+                        "GROUP_CHAT_ENABLED=true",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            with patch.object(core, "ENV_PATH", env), patch.dict(os.environ, {}, clear=True):
+                settings = core.get_settings()
+
+            self.assertEqual(settings.active_mode, "group")
+            self.assertEqual(settings.telegram_chat_id, "")
+
+    def test_fetch_group_chat_candidates_lists_chats_and_users(self) -> None:
+        settings = make_settings(Path("/tmp"))
+        updates = {
+            "ok": True,
+            "result": [
+                {
+                    "update_id": 1,
+                    "message": {
+                        "chat": {"id": -1001, "title": "Группа", "type": "group"},
+                        "from": {"id": 42, "username": "target", "first_name": "Target"},
+                        "text": "hello",
+                    },
+                }
+            ],
+        }
+
+        with patch.object(core, "get_json", return_value=updates):
+            candidates = core.fetch_group_chat_candidates(settings)
+
+        self.assertEqual(candidates[0]["chat_id"], "-1001")
+        self.assertEqual(candidates[0]["message_count"], 1)
+        self.assertIn("42", candidates[0]["users"])
 
 
 def argparse_namespace(**kwargs: object) -> object:

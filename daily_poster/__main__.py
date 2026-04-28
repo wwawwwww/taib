@@ -162,6 +162,8 @@ class Settings:
     group_reply_probability: float
     group_min_pause_seconds: int
     group_context_messages: int
+    group_mode: str
+    group_live_min_messages: int
 
 
 def load_dotenv(path: Path) -> None:
@@ -182,11 +184,14 @@ def load_dotenv(path: Path) -> None:
 def get_settings() -> Settings:
     load_dotenv(ENV_PATH)
 
+    active_mode = normalize_active_mode(os.environ.get("ACTIVE_MODE", "tracking"))
     missing = [
         name
-        for name in ("OPENAI_API_KEY", "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID")
+        for name in ("OPENAI_API_KEY", "TELEGRAM_BOT_TOKEN")
         if not os.environ.get(name)
     ]
+    if active_mode != "group" and not os.environ.get("TELEGRAM_CHAT_ID"):
+        missing.append("TELEGRAM_CHAT_ID")
     if missing:
         joined = ", ".join(missing)
         raise ConfigError(f"Не хватает переменных окружения: {joined}. Проверь .env")
@@ -226,6 +231,7 @@ def get_settings() -> Settings:
         )
         group_min_pause_seconds = int(os.environ.get("GROUP_MIN_PAUSE_SECONDS", "90"))
         group_context_messages = int(os.environ.get("GROUP_CONTEXT_MESSAGES", "16"))
+        group_live_min_messages = int(os.environ.get("GROUP_LIVE_MIN_MESSAGES", "30"))
     except ValueError as exc:
         raise ConfigError("ACTIVITY_* и *_MIN_PAUSE_MINUTES должны быть числами.") from exc
     try:
@@ -240,14 +246,13 @@ def get_settings() -> Settings:
     spontaneous_enabled = parse_bool(os.environ.get("SPONTANEOUS_ENABLED", "true"))
     autopilot_enabled = parse_bool(os.environ.get("AUTOPILOT_ENABLED", "false"))
     group_chat_enabled = parse_bool(os.environ.get("GROUP_CHAT_ENABLED", "false"))
-    active_mode = normalize_active_mode(os.environ.get("ACTIVE_MODE", "tracking"))
 
     return Settings(
         active_mode=active_mode,
         openai_api_key=os.environ["OPENAI_API_KEY"],
         openai_model=os.environ.get("OPENAI_MODEL", "gpt-5.1"),
         telegram_bot_token=os.environ["TELEGRAM_BOT_TOKEN"],
-        telegram_chat_id=os.environ["TELEGRAM_CHAT_ID"],
+        telegram_chat_id=os.environ.get("TELEGRAM_CHAT_ID", ""),
         post_language=os.environ.get("POST_LANGUAGE", "ru"),
         post_max_chars=max_chars,
         post_temperature=temperature,
@@ -270,6 +275,8 @@ def get_settings() -> Settings:
         group_reply_probability=group_reply_probability,
         group_min_pause_seconds=group_min_pause_seconds,
         group_context_messages=group_context_messages,
+        group_mode=normalize_group_mode(os.environ.get("GROUP_MODE", "live")),
+        group_live_min_messages=group_live_min_messages,
     )
 
 
@@ -286,6 +293,13 @@ def normalize_active_mode(value: str) -> str:
     if normalized in {"autogen", "tracking", "group", "off"}:
         return normalized
     return "tracking"
+
+
+def normalize_group_mode(value: str) -> str:
+    normalized = value.strip().lower()
+    if normalized in {"live", "archive"}:
+        return normalized
+    return "live"
 
 
 def parse_paths(value: str) -> list[Path]:
@@ -1928,6 +1942,19 @@ def write_group_memory(memory: dict[str, Any]) -> None:
     GROUP_MEMORY_PATH.write_text(json.dumps(memory, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
+def group_target_message_count() -> int:
+    memory = read_group_memory()
+    target_messages = memory.get("target_messages", [])
+    return len(target_messages) if isinstance(target_messages, list) else 0
+
+
+def group_has_archive_profile() -> bool:
+    memory = read_group_memory()
+    target = memory.get("target_participant")
+    profile = memory.get("style_profile")
+    return isinstance(target, dict) and bool(target) and isinstance(profile, dict) and int(profile.get("posts_analyzed", 0) or 0) > 0
+
+
 def participant_key(message: dict[str, Any]) -> str:
     author_id = str(message.get("author_id") or "").strip()
     if author_id:
@@ -2172,6 +2199,58 @@ def write_last_group_reply() -> None:
     state = read_state()
     state["group_last_reply_at"] = datetime.now().isoformat(timespec="seconds")
     write_state(state)
+
+
+def fetch_group_chat_candidates(settings: Settings) -> list[dict[str, Any]]:
+    url = TELEGRAM_GET_UPDATES_URL.format(token=urllib.parse.quote(settings.telegram_bot_token))
+    response = get_json(
+        url,
+        {
+            "timeout": 0,
+            "allowed_updates": json.dumps(["message", "my_chat_member"]),
+        },
+    )
+    if not response.get("ok"):
+        raise ApiError(f"Telegram getUpdates вернул ошибку: {json.dumps(response, ensure_ascii=False)}")
+
+    candidates: dict[str, dict[str, Any]] = {}
+    for update in response.get("result", []):
+        if not isinstance(update, dict):
+            continue
+        payload = update.get("message") or update.get("my_chat_member")
+        if not isinstance(payload, dict):
+            continue
+        chat = payload.get("chat")
+        if not isinstance(chat, dict) or chat.get("type") not in {"group", "supergroup"}:
+            continue
+        chat_id = str(chat.get("id", ""))
+        if not chat_id:
+            continue
+        item = candidates.setdefault(
+            chat_id,
+            {
+                "chat_id": chat_id,
+                "title": chat.get("title") or chat.get("username") or chat_id,
+                "type": chat.get("type", "group"),
+                "message_count": 0,
+                "users": {},
+            },
+        )
+        if "message" in update:
+            item["message_count"] = int(item.get("message_count", 0)) + 1
+            user = payload.get("from")
+            if isinstance(user, dict) and not user.get("is_bot"):
+                user_id = str(user.get("id", ""))
+                users = item.setdefault("users", {})
+                if isinstance(users, dict) and user_id:
+                    users[user_id] = {
+                        "user_id": user_id,
+                        "username": user.get("username") or "",
+                        "name": telegram_user_name(user),
+                    }
+    result = list(candidates.values())
+    result.sort(key=lambda item: (-int(item.get("message_count", 0)), str(item.get("title", ""))))
+    return result
 
 
 def sync_channel_memory(settings: Settings) -> int:
@@ -2486,8 +2565,10 @@ def command_group_chat(args: argparse.Namespace) -> int:
     if not settings.group_chat_enabled and not args.force:
         print("Skipped: групповой чат выключен (GROUP_CHAT_ENABLED=false).")
         return 0
-    if not (settings.group_target_user_id or settings.group_target_username or settings.group_target_name):
+    if settings.group_mode == "live" and not (settings.group_target_user_id or settings.group_target_username or settings.group_target_name):
         raise ConfigError("Нужно указать GROUP_TARGET_USER_ID, GROUP_TARGET_USERNAME или GROUP_TARGET_NAME.")
+    if settings.group_mode == "archive" and not group_has_archive_profile():
+        raise ConfigError("Для режима archive нужно загрузить архив группы и выбрать участника.")
     if not (settings.group_chat_id or settings.telegram_chat_id):
         raise ConfigError("Нужно указать GROUP_CHAT_ID или TELEGRAM_CHAT_ID.")
 
@@ -2535,6 +2616,8 @@ def command_group_chat(args: argparse.Namespace) -> int:
         if is_target:
             learned += 1
             continue
+        if settings.group_mode == "live" and group_target_message_count() < settings.group_live_min_messages and not args.force:
+            continue
 
         if seconds_since_group_reply() < settings.group_min_pause_seconds and not args.force:
             continue
@@ -2555,7 +2638,10 @@ def command_group_chat(args: argparse.Namespace) -> int:
         state["group_update_offset"] = max_update_id + 1
         write_state(state)
 
-    print(f"Group chat: seen={seen}, learned={learned}, replied={replied}, skipped_by_chance={skipped_by_chance}")
+    print(
+        f"Group chat: mode={settings.group_mode}, seen={seen}, learned={learned}, "
+        f"target_messages={group_target_message_count()}, replied={replied}, skipped_by_chance={skipped_by_chance}"
+    )
     return 0
 
 
@@ -2579,6 +2665,22 @@ def command_group_use_participant(args: argparse.Namespace) -> int:
         f"{participant.get('author_name', 'unknown')} "
         f"({participant.get('count', 0)} сообщений)"
     )
+    return 0
+
+
+def command_group_chats(args: argparse.Namespace) -> int:
+    settings = get_settings()
+    candidates = fetch_group_chat_candidates(settings)
+    if not candidates:
+        print("Групповые чаты в Telegram updates не найдены. Напиши новое сообщение в группе и повтори.")
+        return 0
+    for idx, chat in enumerate(candidates, start=1):
+        users = chat.get("users", {})
+        user_count = len(users) if isinstance(users, dict) else 0
+        print(
+            f"{idx}. {chat.get('title')} | {chat.get('chat_id')} | "
+            f"{chat.get('type')} | сообщений: {chat.get('message_count', 0)} | участников видно: {user_count}"
+        )
     return 0
 
 
@@ -2693,6 +2795,9 @@ def build_parser() -> argparse.ArgumentParser:
     group_use = subparsers.add_parser("group-use-participant", help="Choose a participant from the imported group archive.")
     group_use.add_argument("selector", help="Participant number, id or exact name from group-import-archive output.")
     group_use.set_defaults(func=command_group_use_participant)
+
+    group_chats = subparsers.add_parser("group-chats", help="List group chats visible in Telegram updates.")
+    group_chats.set_defaults(func=command_group_chats)
 
     import_history = subparsers.add_parser("import-history", help="Replace the channel style basis from a Telegram export.")
     import_history.add_argument("path", help="Path to a .txt, .md, .json, .jsonl, .html/.htm file or a folder with exports.")

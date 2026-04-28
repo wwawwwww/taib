@@ -263,34 +263,30 @@ class TgAutoTui:
             lines = [
                 "Групповой чат",
                 "",
-                "Этот режим читает сообщения группы, учится на выбранном участнике и иногда отвечает в его манере.",
+                "Два режима: live-обучение в чате или личность из архива.",
                 "",
                 f"Активен: {'да' if enabled else 'нет'}",
+                f"Сценарий: {env.get('GROUP_MODE', 'live')}",
                 f"Группа: {env.get('GROUP_CHAT_ID') or env.get('TELEGRAM_CHAT_ID', 'not set')}",
-                f"Участник-образец: {env.get('GROUP_TARGET_USERNAME') or env.get('GROUP_TARGET_USER_ID') or env.get('GROUP_TARGET_NAME') or 'not set'}",
                 f"Шанс ответа: {env.get('GROUP_REPLY_PROBABILITY', '0.12')}",
                 f"Пауза между ответами: {env.get('GROUP_MIN_PAUSE_SECONDS', '90')} сек",
                 "",
-                "1. Включить режим группы",
-                "2. Настроить группу и участника",
+                "1. Live: учиться на участнике в выбранном чате",
+                "2. Archive: загрузить архив и выбрать личность",
                 "3. Проверить новые сообщения сейчас",
-                "4. Загрузить архив и выбрать участника",
+                "4. Общие параметры ответов",
                 "5. Назад",
             ]
             self.show_option_screen(stdscr, lines)
             key = stdscr.getch()
             if key == ord("1"):
-                env["ACTIVE_MODE"] = "group"
-                env["GROUP_CHAT_ENABLED"] = "true"
-                write_env(env)
-                sync_mode_agents("group")
-                self.message = "Режим группового чата включен."
+                self.configure_group_live(stdscr)
             elif key == ord("2"):
-                self.configure_group_chat(stdscr)
+                self.configure_group_archive(stdscr)
             elif key == ord("3"):
                 self.run_cli_and_show(stdscr, ["group-chat"])
             elif key == ord("4"):
-                self.import_group_archive_menu(stdscr)
+                self.configure_group_common(stdscr)
             elif key in (ord("5"), ord("q"), 27):
                 return
 
@@ -429,6 +425,66 @@ class TgAutoTui:
         sync_mode_agents("group")
         self.message = "Групповой чат обновлен."
 
+    def configure_group_live(self, stdscr: curses.window) -> None:
+        env = read_env()
+        env["ACTIVE_MODE"] = "group"
+        env["GROUP_CHAT_ENABLED"] = "true"
+        env["GROUP_MODE"] = "live"
+        write_env(env)
+        chat = self.choose_group_chat_from_updates(stdscr)
+        if chat:
+            env["GROUP_CHAT_ID"] = str(chat.get("chat_id", ""))
+            user = self.choose_visible_group_user(stdscr, chat)
+            if user:
+                env["GROUP_TARGET_USER_ID"] = str(user.get("user_id", ""))
+                env["GROUP_TARGET_USERNAME"] = str(user.get("username", ""))
+                env["GROUP_TARGET_NAME"] = str(user.get("name", ""))
+        else:
+            value = self.prompt(stdscr, f"ID или @username группы [{env.get('GROUP_CHAT_ID', '')}]: ")
+            if value.strip():
+                env["GROUP_CHAT_ID"] = value.strip()
+        env["GROUP_LIVE_MIN_MESSAGES"] = (
+            self.prompt(stdscr, f"Сколько сообщений участника собрать перед ответами [{env.get('GROUP_LIVE_MIN_MESSAGES', '30')}]: ")
+            or env.get("GROUP_LIVE_MIN_MESSAGES", "30")
+        )
+        write_env(env)
+        sync_mode_agents("group")
+        self.message = "Live-режим группы настроен."
+
+    def configure_group_archive(self, stdscr: curses.window) -> None:
+        env = read_env()
+        env["ACTIVE_MODE"] = "group"
+        env["GROUP_CHAT_ENABLED"] = "true"
+        env["GROUP_MODE"] = "archive"
+        write_env(env)
+        chat = self.choose_group_chat_from_updates(stdscr)
+        if chat:
+            env["GROUP_CHAT_ID"] = str(chat.get("chat_id", ""))
+        else:
+            value = self.prompt(stdscr, f"ID или @username группы для ответов [{env.get('GROUP_CHAT_ID', '')}]: ")
+            if value.strip():
+                env["GROUP_CHAT_ID"] = value.strip()
+        write_env(env)
+        self.import_group_archive_menu(stdscr)
+        sync_mode_agents("group")
+
+    def configure_group_common(self, stdscr: curses.window) -> None:
+        env = read_env()
+        env["GROUP_REPLY_PROBABILITY"] = (
+            self.prompt(stdscr, f"Шанс ответа 0..1 [{env.get('GROUP_REPLY_PROBABILITY', '0.12')}]: ")
+            or env.get("GROUP_REPLY_PROBABILITY", "0.12")
+        )
+        env["GROUP_MIN_PAUSE_SECONDS"] = (
+            self.prompt(stdscr, f"Минимальная пауза между ответами, сек [{env.get('GROUP_MIN_PAUSE_SECONDS', '90')}]: ")
+            or env.get("GROUP_MIN_PAUSE_SECONDS", "90")
+        )
+        env["GROUP_CONTEXT_MESSAGES"] = (
+            self.prompt(stdscr, f"Сколько последних сообщений учитывать [{env.get('GROUP_CONTEXT_MESSAGES', '16')}]: ")
+            or env.get("GROUP_CONTEXT_MESSAGES", "16")
+        )
+        write_env(env)
+        self.message = "Общие параметры группового режима обновлены."
+
     def import_group_archive_menu(self, stdscr: curses.window) -> None:
         path = self.prompt(stdscr, "Путь к файлу или папке экспорта группового чата: ")
         if not path.strip():
@@ -505,6 +561,86 @@ class TgAutoTui:
                 selected = max(0, selected - view_height)
             elif key in (10, 13, curses.KEY_ENTER):
                 return participants[selected]
+
+    def choose_group_chat_from_updates(self, stdscr: curses.window) -> dict[str, object] | None:
+        try:
+            settings = core.get_settings()
+            candidates = core.fetch_group_chat_candidates(settings)
+        except Exception as exc:  # noqa: BLE001
+            self.message = f"Не удалось найти чаты в Telegram updates: {exc}"
+            return None
+        if not candidates:
+            self.message = "Группы не найдены. Напиши новое сообщение в группе и повтори."
+            return None
+        return self.choose_group_chat(stdscr, candidates)
+
+    def choose_group_chat(
+        self,
+        stdscr: curses.window,
+        chats: list[dict[str, object]],
+    ) -> dict[str, object] | None:
+        selected = 0
+        while True:
+            stdscr.erase()
+            h, w = stdscr.getmaxyx()
+            stdscr.addstr(1, 2, "Выбери чат для ответов"[: w - 4], curses.color_pair(1) | curses.A_BOLD)
+            stdscr.addstr(2, 2, "Enter — выбрать, q — ввести вручную/назад."[: w - 4])
+            view_height = max(1, h - 6)
+            top = max(0, min(selected - view_height + 1, len(chats) - view_height))
+            for row, chat in enumerate(chats[top: top + view_height], start=0):
+                idx = top + row
+                attr = curses.A_REVERSE if idx == selected else curses.A_NORMAL
+                line = (
+                    f"{idx + 1}. {chat.get('title', 'unknown')} | {chat.get('chat_id', '')} | "
+                    f"{chat.get('type', '')} | сообщений видно: {chat.get('message_count', 0)}"
+                )
+                stdscr.addstr(4 + row, 2, line[: w - 4], attr)
+            self.draw_footer(stdscr)
+            stdscr.refresh()
+            key = stdscr.getch()
+            if key in (ord("q"), 27):
+                return None
+            if key in (curses.KEY_UP, ord("k")):
+                selected = (selected - 1) % len(chats)
+            elif key in (curses.KEY_DOWN, ord("j")):
+                selected = (selected + 1) % len(chats)
+            elif key in (10, 13, curses.KEY_ENTER):
+                return chats[selected]
+
+    def choose_visible_group_user(
+        self,
+        stdscr: curses.window,
+        chat: dict[str, object],
+    ) -> dict[str, object] | None:
+        users = chat.get("users", {})
+        if not isinstance(users, dict) or not users:
+            self.message = "В updates пока нет участников этого чата. Напиши сообщение нужным аккаунтом и повтори."
+            return None
+        user_list = list(users.values())
+        selected = 0
+        while True:
+            stdscr.erase()
+            h, w = stdscr.getmaxyx()
+            stdscr.addstr(1, 2, "Выбери участника для live-обучения"[: w - 4], curses.color_pair(1) | curses.A_BOLD)
+            stdscr.addstr(2, 2, "Enter — выбрать, q — пропустить."[: w - 4])
+            view_height = max(1, h - 6)
+            top = max(0, min(selected - view_height + 1, len(user_list) - view_height))
+            for row, user in enumerate(user_list[top: top + view_height], start=0):
+                idx = top + row
+                attr = curses.A_REVERSE if idx == selected else curses.A_NORMAL
+                line = f"{idx + 1}. {user.get('name', 'unknown')} | {user.get('user_id', '')} | @{user.get('username', '')}"
+                stdscr.addstr(4 + row, 2, line[: w - 4], attr)
+            self.draw_footer(stdscr)
+            stdscr.refresh()
+            key = stdscr.getch()
+            if key in (ord("q"), 27):
+                return None
+            if key in (curses.KEY_UP, ord("k")):
+                selected = (selected - 1) % len(user_list)
+            elif key in (curses.KEY_DOWN, ord("j")):
+                selected = (selected + 1) % len(user_list)
+            elif key in (10, 13, curses.KEY_ENTER):
+                return user_list[selected]
 
     def configure_tracking_roots(self, stdscr: curses.window) -> None:
         env = read_env()
@@ -1056,6 +1192,7 @@ def write_env(values: dict[str, str]) -> None:
         "AUTOPILOT_ENABLED",
         "AUTOPILOT_POSTS_PER_DAY",
         "AUTOPILOT_MIN_PAUSE_MINUTES",
+        "GROUP_MODE",
         "GROUP_CHAT_ENABLED",
         "GROUP_CHAT_ID",
         "GROUP_TARGET_USER_ID",
@@ -1064,6 +1201,7 @@ def write_env(values: dict[str, str]) -> None:
         "GROUP_REPLY_PROBABILITY",
         "GROUP_MIN_PAUSE_SECONDS",
         "GROUP_CONTEXT_MESSAGES",
+        "GROUP_LIVE_MIN_MESSAGES",
         "ACTIVITY_SCAN_ROOTS",
         "ACTIVITY_EXCLUDE_DIRS",
         "ACTIVITY_MAX_FILES",
@@ -1082,6 +1220,7 @@ def write_env(values: dict[str, str]) -> None:
         "AUTOPILOT_ENABLED": "false",
         "AUTOPILOT_POSTS_PER_DAY": "2",
         "AUTOPILOT_MIN_PAUSE_MINUTES": "240",
+        "GROUP_MODE": "live",
         "GROUP_CHAT_ENABLED": "false",
         "GROUP_CHAT_ID": "",
         "GROUP_TARGET_USER_ID": "",
@@ -1090,6 +1229,7 @@ def write_env(values: dict[str, str]) -> None:
         "GROUP_REPLY_PROBABILITY": "0.12",
         "GROUP_MIN_PAUSE_SECONDS": "90",
         "GROUP_CONTEXT_MESSAGES": "16",
+        "GROUP_LIVE_MIN_MESSAGES": "30",
         "ACTIVITY_SCAN_ROOTS": core.DEFAULT_SCAN_ROOTS,
         "ACTIVITY_EXCLUDE_DIRS": "node_modules,.git,.venv,venv,__pycache__,Library",
         "ACTIVITY_MAX_FILES": "80",
@@ -1118,6 +1258,7 @@ def write_env(values: dict[str, str]) -> None:
     lines.extend(["", "# Group chat mode"])
     for key in (
         "GROUP_CHAT_ENABLED",
+        "GROUP_MODE",
         "GROUP_CHAT_ID",
         "GROUP_TARGET_USER_ID",
         "GROUP_TARGET_USERNAME",
@@ -1125,10 +1266,11 @@ def write_env(values: dict[str, str]) -> None:
         "GROUP_REPLY_PROBABILITY",
         "GROUP_MIN_PAUSE_SECONDS",
         "GROUP_CONTEXT_MESSAGES",
+        "GROUP_LIVE_MIN_MESSAGES",
     ):
         lines.append(f"{key}={merged.get(key, '')}")
     lines.extend(["", "# Daily activity scan"])
-    for key in ordered_keys[22:]:
+    for key in ordered_keys[24:]:
         lines.append(f"{key}={merged.get(key, '')}")
     core.ENV_PATH.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
