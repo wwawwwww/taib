@@ -261,6 +261,11 @@ class TgAutoTui:
         while True:
             env = read_env()
             enabled = env.get("ACTIVE_MODE") == "group" and env.get("GROUP_CHAT_ENABLED", "false") == "true"
+            memory = core.read_group_memory()
+            target = memory.get("target_participant") if isinstance(memory, dict) else {}
+            profile = memory.get("style_profile") if isinstance(memory, dict) else {}
+            persona_name = str(target.get("author_name", "не выбрана")) if isinstance(target, dict) else "не выбрана"
+            posts_analyzed = int(profile.get("posts_analyzed", 0) or 0) if isinstance(profile, dict) else 0
             lines = [
                 "Групповой чат",
                 "",
@@ -269,26 +274,30 @@ class TgAutoTui:
                 f"Активен: {'да' if enabled else 'нет'}",
                 f"Сценарий: {env.get('GROUP_MODE', 'live')}",
                 f"Группа: {env.get('GROUP_CHAT_ID') or env.get('TELEGRAM_CHAT_ID', 'not set')}",
+                f"Архивная личность: {persona_name} ({posts_analyzed} сообщений)",
                 f"Шанс ответа: {env.get('GROUP_REPLY_PROBABILITY', '0.12')}",
                 f"Пауза между ответами: {env.get('GROUP_MIN_PAUSE_SECONDS', '90')} сек",
                 "",
                 "1. Live: учиться на участнике в выбранном чате",
-                "2. Archive: загрузить архив и выбрать личность",
-                "3. Проверить новые сообщения сейчас",
-                "4. Общие параметры ответов",
-                "5. Назад",
+                "2. Запустить с уже загруженной личностью",
+                "3. Загрузить/заменить архив и выбрать личность",
+                "4. Проверить новые сообщения сейчас",
+                "5. Общие параметры ответов",
+                "0. Назад",
             ]
             self.show_option_screen(stdscr, lines)
             key = stdscr.getch()
             if key == ord("1"):
                 self.configure_group_live(stdscr)
             elif key == ord("2"):
-                self.configure_group_archive(stdscr)
+                self.activate_existing_group_archive(stdscr)
             elif key == ord("3"):
-                self.run_cli_and_show(stdscr, ["group-chat"])
+                self.configure_group_archive(stdscr)
             elif key == ord("4"):
+                self.run_cli_and_show(stdscr, ["group-chat"])
+            elif key == ord("5"):
                 self.configure_group_common(stdscr)
-            elif key in (ord("5"), ord("q"), 27):
+            elif key in (ord("0"), ord("q"), 27):
                 return
 
     def settings_hub(self, stdscr: curses.window) -> None:
@@ -428,6 +437,8 @@ class TgAutoTui:
 
     def configure_group_live(self, stdscr: curses.window) -> None:
         env = read_env()
+        previous_active = env.get("ACTIVE_MODE") == "group" and env.get("GROUP_CHAT_ENABLED") == "true"
+        previous_chat = env.get("GROUP_CHAT_ID", "")
         env["ACTIVE_MODE"] = "group"
         env["GROUP_CHAT_ENABLED"] = "true"
         env["GROUP_MODE"] = "live"
@@ -449,11 +460,15 @@ class TgAutoTui:
             or env.get("GROUP_LIVE_MIN_MESSAGES", "30")
         )
         write_env(env)
+        if not previous_active or env.get("GROUP_CHAT_ID", "") != previous_chat:
+            self.reset_group_update_baseline()
         sync_mode_agents("group")
         self.message = "Live-режим группы настроен."
 
     def configure_group_archive(self, stdscr: curses.window) -> None:
         env = read_env()
+        previous_active = env.get("ACTIVE_MODE") == "group" and env.get("GROUP_CHAT_ENABLED") == "true"
+        previous_chat = env.get("GROUP_CHAT_ID", "")
         env["ACTIVE_MODE"] = "group"
         env["GROUP_CHAT_ENABLED"] = "true"
         env["GROUP_MODE"] = "archive"
@@ -467,7 +482,47 @@ class TgAutoTui:
                 env["GROUP_CHAT_ID"] = value.strip()
         write_env(env)
         self.import_group_archive_menu(stdscr)
+        env = read_env()
+        if not previous_active or env.get("GROUP_CHAT_ID", "") != previous_chat:
+            self.reset_group_update_baseline()
         sync_mode_agents("group")
+
+    def activate_existing_group_archive(self, stdscr: curses.window) -> None:
+        if not core.group_has_archive_profile():
+            self.message = "Сначала загрузи архив и выбери участника-личность."
+            return
+        env = read_env()
+        previous_active = env.get("ACTIVE_MODE") == "group" and env.get("GROUP_CHAT_ENABLED") == "true"
+        previous_chat = env.get("GROUP_CHAT_ID", "")
+        env["ACTIVE_MODE"] = "group"
+        env["GROUP_CHAT_ENABLED"] = "true"
+        env["GROUP_MODE"] = "archive"
+        current_chat = env.get("GROUP_CHAT_ID", "")
+        value = self.prompt(
+            stdscr,
+            f"Группа для ответов [{current_chat or 'не выбрана'}]. Enter оставить, LIST выбрать из Telegram updates: ",
+        ).strip()
+        if value.upper() == "LIST":
+            write_env(env)
+            chat = self.choose_group_chat_from_updates(stdscr)
+            if chat:
+                env["GROUP_CHAT_ID"] = str(chat.get("chat_id", ""))
+        elif value:
+            env["GROUP_CHAT_ID"] = value
+        if not env.get("GROUP_CHAT_ID"):
+            self.message = "Нужно указать группу для ответов."
+            write_env(env)
+            return
+        write_env(env)
+        if not previous_active or env.get("GROUP_CHAT_ID", "") != previous_chat:
+            self.reset_group_update_baseline()
+        sync_mode_agents("group")
+        self.message = "Групповой режим запущен с уже загруженной личностью."
+
+    def reset_group_update_baseline(self) -> None:
+        state = core.read_state()
+        state.pop("group_update_baseline_ready", None)
+        core.write_state(state)
 
     def configure_group_common(self, stdscr: curses.window) -> None:
         env = read_env()
