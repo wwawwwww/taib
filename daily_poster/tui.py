@@ -25,6 +25,7 @@ else:
 LAUNCH_AGENT_PATH = Path.home() / "Library" / "LaunchAgents" / "com.codex.daily-poster.plist"
 MAYBE_AGENT_PATH = Path.home() / "Library" / "LaunchAgents" / "com.codex.maybe-poster.plist"
 AUTOPILOT_AGENT_PATH = Path.home() / "Library" / "LaunchAgents" / "com.codex.autopilot.plist"
+GROUP_AGENT_PATH = Path.home() / "Library" / "LaunchAgents" / "com.codex.group-chat.plist"
 IS_MACOS = platform.system() == "Darwin"
 IS_WINDOWS = platform.system() == "Windows"
 IS_LINUX = platform.system() == "Linux"
@@ -482,7 +483,13 @@ class TgAutoTui:
             self.prompt(stdscr, f"Сколько последних сообщений учитывать [{env.get('GROUP_CONTEXT_MESSAGES', '16')}]: ")
             or env.get("GROUP_CONTEXT_MESSAGES", "16")
         )
+        env["GROUP_CHECK_INTERVAL_SECONDS"] = (
+            self.prompt(stdscr, f"Как часто проверять чат, сек [{env.get('GROUP_CHECK_INTERVAL_SECONDS', '60')}]: ")
+            or env.get("GROUP_CHECK_INTERVAL_SECONDS", "60")
+        )
         write_env(env)
+        if env.get("ACTIVE_MODE") == "group" and env.get("GROUP_CHAT_ENABLED") == "true":
+            sync_mode_agents("group")
         self.message = "Общие параметры группового режима обновлены."
 
     def import_group_archive_menu(self, stdscr: curses.window) -> None:
@@ -1202,6 +1209,7 @@ def write_env(values: dict[str, str]) -> None:
         "GROUP_MIN_PAUSE_SECONDS",
         "GROUP_CONTEXT_MESSAGES",
         "GROUP_LIVE_MIN_MESSAGES",
+        "GROUP_CHECK_INTERVAL_SECONDS",
         "ACTIVITY_SCAN_ROOTS",
         "ACTIVITY_EXCLUDE_DIRS",
         "ACTIVITY_MAX_FILES",
@@ -1230,6 +1238,7 @@ def write_env(values: dict[str, str]) -> None:
         "GROUP_MIN_PAUSE_SECONDS": "90",
         "GROUP_CONTEXT_MESSAGES": "16",
         "GROUP_LIVE_MIN_MESSAGES": "30",
+        "GROUP_CHECK_INTERVAL_SECONDS": "60",
         "ACTIVITY_SCAN_ROOTS": core.DEFAULT_SCAN_ROOTS,
         "ACTIVITY_EXCLUDE_DIRS": "node_modules,.git,.venv,venv,__pycache__,Library",
         "ACTIVITY_MAX_FILES": "80",
@@ -1267,10 +1276,11 @@ def write_env(values: dict[str, str]) -> None:
         "GROUP_MIN_PAUSE_SECONDS",
         "GROUP_CONTEXT_MESSAGES",
         "GROUP_LIVE_MIN_MESSAGES",
+        "GROUP_CHECK_INTERVAL_SECONDS",
     ):
         lines.append(f"{key}={merged.get(key, '')}")
     lines.extend(["", "# Daily activity scan"])
-    for key in ordered_keys[24:]:
+    for key in ordered_keys[25:]:
         lines.append(f"{key}={merged.get(key, '')}")
     core.ENV_PATH.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
@@ -1376,6 +1386,9 @@ def install_launch_agent(source: Path, destination: Path) -> None:
     if destination == MAYBE_AGENT_PATH:
         interval = int(env.get("SPONTANEOUS_CHECK_INTERVAL_MINUTES", "60"))
         data["StartInterval"] = max(60, interval * 60)
+    elif destination == GROUP_AGENT_PATH:
+        interval = int(env.get("GROUP_CHECK_INTERVAL_SECONDS", "60"))
+        data["StartInterval"] = max(15, interval)
     with destination.open("wb") as handle:
         plistlib.dump(data, handle, sort_keys=False)
     reload_launch_agent(destination)
@@ -1387,8 +1400,14 @@ def sync_mode_agents(mode: str) -> None:
     if mode == "autogen":
         source = core.PROJECT_ROOT / "automation" / "com.codex.maybe-poster.plist"
         install_launch_agent(source, MAYBE_AGENT_PATH)
-    elif mode in {"tracking", "group", "off"}:
+        unload_launch_agent(GROUP_AGENT_PATH)
+    elif mode == "group":
         unload_launch_agent(MAYBE_AGENT_PATH)
+        source = core.PROJECT_ROOT / "automation" / "com.codex.group-chat.plist"
+        install_launch_agent(source, GROUP_AGENT_PATH)
+    elif mode in {"tracking", "off"}:
+        unload_launch_agent(MAYBE_AGENT_PATH)
+        unload_launch_agent(GROUP_AGENT_PATH)
 
 
 def stop_all_bot_work() -> int:
@@ -1399,7 +1418,7 @@ def stop_all_bot_work() -> int:
     env["GROUP_CHAT_ENABLED"] = "false"
     write_env(env)
 
-    for path in (LAUNCH_AGENT_PATH, MAYBE_AGENT_PATH, AUTOPILOT_AGENT_PATH):
+    for path in (LAUNCH_AGENT_PATH, MAYBE_AGENT_PATH, AUTOPILOT_AGENT_PATH, GROUP_AGENT_PATH):
         unload_launch_agent(path)
 
     return kill_bot_processes()
