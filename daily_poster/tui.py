@@ -274,7 +274,8 @@ class TgAutoTui:
                 "1. Включить режим группы",
                 "2. Настроить группу и участника",
                 "3. Проверить новые сообщения сейчас",
-                "4. Назад",
+                "4. Загрузить архив и выбрать участника",
+                "5. Назад",
             ]
             self.show_option_screen(stdscr, lines)
             key = stdscr.getch()
@@ -288,7 +289,9 @@ class TgAutoTui:
                 self.configure_group_chat(stdscr)
             elif key == ord("3"):
                 self.run_cli_and_show(stdscr, ["group-chat"])
-            elif key in (ord("4"), ord("q"), 27):
+            elif key == ord("4"):
+                self.import_group_archive_menu(stdscr)
+            elif key in (ord("5"), ord("q"), 27):
                 return
 
     def settings_hub(self, stdscr: curses.window) -> None:
@@ -425,6 +428,52 @@ class TgAutoTui:
         write_env(env)
         sync_mode_agents("group")
         self.message = "Групповой чат обновлен."
+
+    def import_group_archive_menu(self, stdscr: curses.window) -> None:
+        path = self.prompt(stdscr, "Путь к файлу или папке экспорта группового чата: ")
+        if not path.strip():
+            self.message = "Загрузка архива группы отменена."
+            return
+        try:
+            imported, participants = core.import_group_archive(Path(path.strip()).expanduser().resolve(), replace=True)
+        except Exception as exc:  # noqa: BLE001
+            self.message = f"Не удалось загрузить архив группы: {exc}"
+            return
+        if not participants:
+            self.message = "В архиве не найдено текстовых сообщений с участниками."
+            return
+
+        lines = [
+            f"Загружено сообщений: {imported}",
+            "",
+            "Выбери участника-образец по номеру:",
+            "",
+        ]
+        for idx, participant in enumerate(participants[:30], start=1):
+            name = participant.get("author_name", "unknown")
+            author_id = participant.get("author_id") or participant.get("key") or ""
+            count = participant.get("count", 0)
+            lines.append(f"{idx}. {name} | {author_id} | {count} сообщений")
+        self.show_text(stdscr, lines)
+
+        selector = self.prompt(stdscr, "Номер/id/точное имя участника: ")
+        if not selector.strip():
+            self.message = "Участник не выбран."
+            return
+        try:
+            selected = core.select_group_archive_participant(selector.strip())
+        except Exception as exc:  # noqa: BLE001
+            self.message = f"Не удалось выбрать участника: {exc}"
+            return
+
+        env = read_env()
+        env["ACTIVE_MODE"] = "group"
+        env["GROUP_CHAT_ENABLED"] = env.get("GROUP_CHAT_ENABLED", "true")
+        if selected.get("author_id"):
+            env["GROUP_TARGET_USER_ID"] = str(selected.get("author_id"))
+        env["GROUP_TARGET_NAME"] = str(selected.get("author_name", ""))
+        write_env(env)
+        self.message = f"Выбран стиль участника: {selected.get('author_name', 'unknown')}."
 
     def configure_tracking_roots(self, stdscr: curses.window) -> None:
         env = read_env()

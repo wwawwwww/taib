@@ -701,6 +701,39 @@ def extract_posts_from_json(payload: Any) -> list[str]:
     return posts
 
 
+def extract_group_messages_from_json(payload: Any) -> list[dict[str, Any]]:
+    messages: list[dict[str, Any]] = []
+    if isinstance(payload, dict):
+        if isinstance(payload.get("messages"), list):
+            for item in payload["messages"]:
+                if not isinstance(item, dict):
+                    continue
+                text = flatten_message_text(item.get("text") or item.get("caption"))
+                if not text.strip():
+                    continue
+                messages.append(
+                    {
+                        "author_id": str(item.get("from_id") or item.get("actor_id") or "").strip(),
+                        "author_name": str(item.get("from") or item.get("actor") or "unknown").strip(),
+                        "text": text.strip(),
+                    }
+                )
+        else:
+            text = flatten_message_text(payload.get("text") or payload.get("caption"))
+            if text.strip():
+                messages.append(
+                    {
+                        "author_id": str(payload.get("from_id") or payload.get("actor_id") or "").strip(),
+                        "author_name": str(payload.get("from") or payload.get("actor") or "unknown").strip(),
+                        "text": text.strip(),
+                    }
+                )
+    elif isinstance(payload, list):
+        for item in payload:
+            messages.extend(extract_group_messages_from_json(item))
+    return messages
+
+
 class TelegramHtmlExportParser(HTMLParser):
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
@@ -747,6 +780,71 @@ def extract_posts_from_html(text: str) -> list[str]:
     return parser.posts
 
 
+class TelegramGroupHtmlExportParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.messages: list[dict[str, Any]] = []
+        self._message_depth = 0
+        self._capture: str | None = None
+        self._capture_depth = 0
+        self._author_chunks: list[str] = []
+        self._text_chunks: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        classes = {
+            part
+            for key, value in attrs
+            if key == "class" and value
+            for part in value.split()
+        }
+        if tag == "div" and "message" in classes:
+            if self._message_depth == 0:
+                self._author_chunks = []
+                self._text_chunks = []
+            self._message_depth += 1
+            return
+        if self._message_depth <= 0:
+            return
+        if tag == "div":
+            self._message_depth += 1
+            if "from_name" in classes:
+                self._capture = "author"
+                self._capture_depth = 1
+            elif "text" in classes:
+                self._capture = "text"
+                self._capture_depth = 1
+        elif self._capture == "text" and tag == "br":
+            self._text_chunks.append("\n")
+
+    def handle_endtag(self, tag: str) -> None:
+        if self._message_depth <= 0 or tag != "div":
+            return
+        if self._capture:
+            self._capture_depth -= 1
+            if self._capture_depth <= 0:
+                self._capture = None
+        self._message_depth -= 1
+        if self._message_depth == 0:
+            author = html.unescape("".join(self._author_chunks)).strip()
+            text = html.unescape("".join(self._text_chunks)).strip()
+            text = re.sub(r"\n{3,}", "\n\n", text)
+            if text:
+                self.messages.append({"author_id": "", "author_name": author or "unknown", "text": text})
+
+    def handle_data(self, data: str) -> None:
+        if self._capture == "author":
+            self._author_chunks.append(data)
+        elif self._capture == "text":
+            self._text_chunks.append(data)
+
+
+def extract_group_messages_from_html(text: str) -> list[dict[str, Any]]:
+    parser = TelegramGroupHtmlExportParser()
+    parser.feed(text)
+    parser.close()
+    return parser.messages
+
+
 def iter_import_sources(path: Path) -> list[Path]:
     if path.is_file():
         return [path]
@@ -780,6 +878,34 @@ def load_posts_for_import(path: Path) -> list[str]:
     if suffix in {".html", ".htm"}:
         return extract_posts_from_html(text)
     return split_plaintext_posts(text)
+
+
+def load_group_messages_for_import(path: Path) -> list[dict[str, Any]]:
+    suffix = path.suffix.lower()
+    text = path.read_text(encoding="utf-8", errors="replace")
+    if suffix == ".jsonl":
+        messages: list[dict[str, Any]] = []
+        for row in text.splitlines():
+            row = row.strip()
+            if not row:
+                continue
+            try:
+                payload = json.loads(row)
+            except json.JSONDecodeError:
+                continue
+            messages.extend(extract_group_messages_from_json(payload))
+        return messages
+    if suffix == ".json":
+        payload = json.loads(text)
+        return extract_group_messages_from_json(payload)
+    if suffix in {".html", ".htm"}:
+        return extract_group_messages_from_html(text)
+    messages = []
+    for block in split_plaintext_posts(text):
+        if ":" in block:
+            author, message = block.split(":", 1)
+            messages.append({"author_id": "", "author_name": author.strip() or "unknown", "text": message.strip()})
+    return messages
 
 
 def rewrite_history_excluding_kinds(kinds: set[str]) -> int:
@@ -1758,6 +1884,9 @@ def message_text(message: dict[str, Any]) -> str:
 
 def default_group_memory() -> dict[str, Any]:
     return {
+        "archive_messages": [],
+        "participants": [],
+        "target_participant": {},
         "target_messages": [],
         "recent_messages": [],
         "bot_replies": [],
@@ -1778,6 +1907,114 @@ def read_group_memory() -> dict[str, Any]:
 def write_group_memory(memory: dict[str, Any]) -> None:
     ensure_dirs()
     GROUP_MEMORY_PATH.write_text(json.dumps(memory, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def participant_key(message: dict[str, Any]) -> str:
+    author_id = str(message.get("author_id") or "").strip()
+    if author_id:
+        return author_id
+    return str(message.get("author_name") or "unknown").strip().lower()
+
+
+def group_archive_participants(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    by_key: dict[str, dict[str, Any]] = {}
+    for message in messages:
+        key = participant_key(message)
+        item = by_key.setdefault(
+            key,
+            {
+                "key": key,
+                "author_id": str(message.get("author_id") or "").strip(),
+                "author_name": str(message.get("author_name") or "unknown").strip(),
+                "count": 0,
+            },
+        )
+        item["count"] = int(item.get("count", 0)) + 1
+        if not item.get("author_name") or item.get("author_name") == "unknown":
+            item["author_name"] = str(message.get("author_name") or "unknown").strip()
+    return sorted(by_key.values(), key=lambda item: (-int(item.get("count", 0)), str(item.get("author_name", ""))))
+
+
+def import_group_archive(path: Path, replace: bool = True) -> tuple[int, list[dict[str, Any]]]:
+    sources = iter_import_sources(path)
+    imported_messages: list[dict[str, Any]] = []
+    for source in sources:
+        try:
+            imported_messages.extend(load_group_messages_for_import(source))
+        except json.JSONDecodeError as exc:
+            raise ConfigError(f"Не удалось разобрать JSON-файл: {source}") from exc
+
+    cleaned = [
+        {
+            "author_id": str(item.get("author_id") or "").strip(),
+            "author_name": str(item.get("author_name") or "unknown").strip(),
+            "text": str(item.get("text") or "").strip()[:1000],
+        }
+        for item in imported_messages
+        if str(item.get("text") or "").strip()
+    ]
+    participants = group_archive_participants(cleaned)
+
+    memory = default_group_memory() if replace else read_group_memory()
+    existing = memory.get("archive_messages", [])
+    if not isinstance(existing, list) or replace:
+        existing = []
+    existing.extend(cleaned)
+    memory["archive_messages"] = existing[-5000:]
+    memory["participants"] = group_archive_participants(memory["archive_messages"])
+    if replace:
+        memory["target_participant"] = {}
+        memory["target_messages"] = []
+        memory["style_profile"] = {}
+    write_group_memory(memory)
+    return len(cleaned), participants
+
+
+def select_group_archive_participant(selector: str) -> dict[str, Any]:
+    selector = selector.strip()
+    if not selector:
+        raise ConfigError("Не указан участник архива.")
+    memory = read_group_memory()
+    messages = memory.get("archive_messages", [])
+    participants = memory.get("participants", [])
+    if not isinstance(messages, list) or not messages:
+        raise ConfigError("Архив группового чата еще не загружен.")
+    if not isinstance(participants, list):
+        participants = group_archive_participants(messages)
+
+    selected: dict[str, Any] | None = None
+    if selector.isdigit():
+        idx = int(selector) - 1
+        if 0 <= idx < len(participants) and isinstance(participants[idx], dict):
+            selected = participants[idx]
+    if selected is None:
+        normalized = selector.strip().lstrip("@").lower()
+        for participant in participants:
+            if not isinstance(participant, dict):
+                continue
+            candidates = {
+                str(participant.get("key", "")).lstrip("@").lower(),
+                str(participant.get("author_id", "")).lstrip("@").lower(),
+                str(participant.get("author_name", "")).lstrip("@").lower(),
+            }
+            if normalized in candidates:
+                selected = participant
+                break
+    if selected is None:
+        raise ConfigError(f"Участник не найден в архиве: {selector}")
+
+    selected_key = str(selected.get("key") or "")
+    target_messages = [
+        item
+        for item in messages
+        if isinstance(item, dict) and participant_key(item) == selected_key
+    ]
+    posts = [str(item.get("text", "")) for item in target_messages]
+    memory["target_participant"] = selected
+    memory["target_messages"] = target_messages[-300:]
+    memory["style_profile"] = build_style_profile(posts)
+    write_group_memory(memory)
+    return selected
 
 
 def remember_group_message(user: dict[str, Any], text: str, is_target: bool) -> None:
@@ -1818,6 +2055,14 @@ def group_memory_context(settings: Settings) -> str:
     profile = memory.get("style_profile", {})
     recent = memory.get("recent_messages", [])
     replies = memory.get("bot_replies", [])
+    target_participant = memory.get("target_participant", {})
+    if isinstance(target_participant, dict) and target_participant:
+        target_line = (
+            f"{target_participant.get('author_name', 'unknown')} "
+            f"({target_participant.get('count', 0)} сообщений в архиве)"
+        )
+    else:
+        target_line = "не выбран"
 
     recent_lines: list[str] = []
     if isinstance(recent, list):
@@ -1835,6 +2080,8 @@ def group_memory_context(settings: Settings) -> str:
 
     return textwrap.dedent(
         f"""
+        Выбранный участник архива: {target_line}
+
         Профиль человека, которого нужно имитировать:
         {style_profile_context(profile if isinstance(profile, dict) else {})}
 
@@ -2289,6 +2536,29 @@ def command_group_chat(args: argparse.Namespace) -> int:
     return 0
 
 
+def command_group_import_archive(args: argparse.Namespace) -> int:
+    path = Path(args.path).expanduser().resolve()
+    imported, participants = import_group_archive(path, replace=True)
+    print(f"Загружено сообщений группового архива: {imported}")
+    print("Участники:")
+    for idx, participant in enumerate(participants, start=1):
+        name = participant.get("author_name", "unknown")
+        author_id = participant.get("author_id") or participant.get("key") or ""
+        count = participant.get("count", 0)
+        print(f"{idx}. {name} | {author_id} | {count} сообщений")
+    return 0
+
+
+def command_group_use_participant(args: argparse.Namespace) -> int:
+    participant = select_group_archive_participant(args.selector)
+    print(
+        "Выбран участник: "
+        f"{participant.get('author_name', 'unknown')} "
+        f"({participant.get('count', 0)} сообщений)"
+    )
+    return 0
+
+
 def command_import_history(args: argparse.Namespace) -> int:
     path = Path(args.path).expanduser().resolve()
     imported, skipped = import_channel_history(path)
@@ -2392,6 +2662,14 @@ def build_parser() -> argparse.ArgumentParser:
     group_chat.add_argument("--force", action="store_true", help="Ignore active mode, enabled flag, pause and probability.")
     group_chat.add_argument("--reply-all", action="store_true", help="Reply to every eligible message in this poll instead of stopping after one.")
     group_chat.set_defaults(func=command_group_chat)
+
+    group_import = subparsers.add_parser("group-import-archive", help="Import a Telegram group chat export and list participants.")
+    group_import.add_argument("path", help="Path to a Telegram group export file or folder.")
+    group_import.set_defaults(func=command_group_import_archive)
+
+    group_use = subparsers.add_parser("group-use-participant", help="Choose a participant from the imported group archive.")
+    group_use.add_argument("selector", help="Participant number, id or exact name from group-import-archive output.")
+    group_use.set_defaults(func=command_group_use_participant)
 
     import_history = subparsers.add_parser("import-history", help="Replace the channel style basis from a Telegram export.")
     import_history.add_argument("path", help="Path to a .txt, .md, .json, .jsonl, .html/.htm file or a folder with exports.")

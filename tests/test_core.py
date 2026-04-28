@@ -348,6 +348,64 @@ class CoreBehaviorTests(unittest.TestCase):
             self.assertEqual(profile.get("posts_analyzed"), 1)
             self.assertIn("сильно", profile.get("signature_words", []))
 
+    def test_import_group_archive_json_lists_and_selects_participants(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            group_memory = root / "group_memory.json"
+            export = root / "result.json"
+            export.write_text(
+                """
+                {
+                  "messages": [
+                    {"from": "Артём", "from_id": "user1", "text": "ну это прям сильно конечно!!"},
+                    {"from": "Наиль", "from_id": "user2", "text": "ахах понял"},
+                    {"from": "Артём", "from_id": "user1", "text": [{"type": "plain", "text": "я бы так и "}, {"type": "plain", "text": "сказал"}]}
+                  ]
+                }
+                """.strip(),
+                encoding="utf-8",
+            )
+
+            with patch.object(core, "GROUP_MEMORY_PATH", group_memory):
+                imported, participants = core.import_group_archive(export)
+                selected = core.select_group_archive_participant("1")
+                memory = core.read_group_memory()
+
+            self.assertEqual(imported, 3)
+            self.assertEqual(participants[0]["author_name"], "Артём")
+            self.assertEqual(participants[0]["count"], 2)
+            self.assertEqual(selected["author_id"], "user1")
+            self.assertEqual(memory["style_profile"]["posts_analyzed"], 2)
+            self.assertEqual(len(memory["target_messages"]), 2)
+
+    def test_import_group_archive_html_extracts_authors(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            group_memory = root / "group_memory.json"
+            export_dir = root / "html"
+            export_dir.mkdir()
+            (export_dir / "messages.html").write_text(
+                """
+                <html><body>
+                  <div class="message default clearfix">
+                    <div class="from_name">Артём</div>
+                    <div class="text">первое<br>сообщение</div>
+                  </div>
+                  <div class="message default clearfix">
+                    <div class="from_name">Наиль</div>
+                    <div class="text">второе сообщение</div>
+                  </div>
+                </body></html>
+                """.strip(),
+                encoding="utf-8",
+            )
+
+            with patch.object(core, "GROUP_MEMORY_PATH", group_memory):
+                imported, participants = core.import_group_archive(export_dir)
+
+            self.assertEqual(imported, 2)
+            self.assertEqual({item["author_name"] for item in participants}, {"Артём", "Наиль"})
+
     def test_group_chat_polls_learns_and_replies_by_probability(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
