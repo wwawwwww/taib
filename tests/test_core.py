@@ -3,6 +3,8 @@ from __future__ import annotations
 import tempfile
 import unittest
 import os
+import io
+from contextlib import redirect_stdout
 from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
@@ -31,6 +33,14 @@ def make_settings(root: Path) -> core.Settings:
         autopilot_enabled=False,
         autopilot_posts_per_day=2,
         autopilot_min_pause_minutes=240,
+        group_chat_enabled=False,
+        group_chat_id="-1001",
+        group_target_user_id="42",
+        group_target_username="target",
+        group_target_name="",
+        group_reply_probability=0.12,
+        group_min_pause_seconds=90,
+        group_context_messages=16,
     )
 
 
@@ -324,6 +334,88 @@ class CoreBehaviorTests(unittest.TestCase):
                 **{**settings.__dict__, "active_mode": "autogen"}  # type: ignore[arg-type]
             )
             self.assertEqual(core.choose_maybe_post_mode(settings), "autopilot")
+
+    def test_group_target_messages_build_style_profile(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            group_memory = Path(tmp) / "group_memory.json"
+            user = {"id": 42, "username": "target", "first_name": "Target"}
+
+            with patch.object(core, "GROUP_MEMORY_PATH", group_memory):
+                core.remember_group_message(user, "ну это прям сильно конечно!!", is_target=True)
+                memory = core.read_group_memory()
+
+            profile = memory.get("style_profile", {})
+            self.assertEqual(profile.get("posts_analyzed"), 1)
+            self.assertIn("сильно", profile.get("signature_words", []))
+
+    def test_group_chat_polls_learns_and_replies_by_probability(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            state = root / "state.json"
+            group_memory = root / "group_memory.json"
+            settings = core.Settings(
+                **{
+                    **make_settings(root).__dict__,
+                    "active_mode": "group",
+                    "group_chat_enabled": True,
+                    "group_chat_id": "-1001",
+                    "group_target_user_id": "42",
+                    "group_reply_probability": 1.0,
+                    "group_min_pause_seconds": 0,
+                }
+            )
+            updates = {
+                "ok": True,
+                "result": [
+                    {
+                        "update_id": 10,
+                        "message": {
+                            "message_id": 1,
+                            "chat": {"id": -1001},
+                            "from": {"id": 42, "username": "target", "first_name": "Target"},
+                            "text": "да я бы так и сказал",
+                        },
+                    },
+                    {
+                        "update_id": 11,
+                        "message": {
+                            "message_id": 2,
+                            "chat": {"id": -1001},
+                            "from": {"id": 7, "username": "other", "first_name": "Other"},
+                            "text": "ну что думаешь?",
+                        },
+                    },
+                ],
+            }
+
+            sent_payloads: list[dict[str, object]] = []
+
+            def fake_post_json(url: str, payload: dict[str, object], headers: dict[str, str] | None = None) -> dict[str, object]:
+                if "api.openai.com" in url:
+                    return {"output_text": "да норм звучит"}
+                sent_payloads.append(payload)
+                return {"ok": True, "result": {"message_id": 99}}
+
+            with (
+                patch.object(core, "STATE_PATH", state),
+                patch.object(core, "GROUP_MEMORY_PATH", group_memory),
+                patch.object(core, "get_settings", return_value=settings),
+                patch.object(core, "get_json", return_value=updates),
+                patch.object(core, "post_json", side_effect=fake_post_json),
+            ):
+                with redirect_stdout(io.StringIO()):
+                    result = core.command_group_chat(argparse_namespace(force=False, reply_all=False))
+                memory = core.read_group_memory()
+
+            self.assertEqual(result, 0)
+            self.assertEqual(len(sent_payloads), 1)
+            self.assertEqual(sent_payloads[0]["chat_id"], -1001)
+            self.assertEqual(sent_payloads[0]["reply_to_message_id"], 2)
+            self.assertEqual(memory["style_profile"]["posts_analyzed"], 1)
+
+
+def argparse_namespace(**kwargs: object) -> object:
+    return type("Args", (), kwargs)()
 
 
 if __name__ == "__main__":

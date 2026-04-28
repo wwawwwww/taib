@@ -29,6 +29,7 @@ DRAFTS_DIR = PROJECT_ROOT / "data" / "drafts"
 HISTORY_PATH = PROJECT_ROOT / "data" / "posts.jsonl"
 STATE_PATH = PROJECT_ROOT / "data" / "state.json"
 MEMORY_PATH = PROJECT_ROOT / "data" / "memory.json"
+GROUP_MEMORY_PATH = PROJECT_ROOT / "data" / "group_memory.json"
 SNAPSHOTS_DIR = PROJECT_ROOT / "data" / "snapshots"
 LOGS_DIR = PROJECT_ROOT / "logs"
 DEBUG_DIR = PROJECT_ROOT / "data" / "debug"
@@ -153,6 +154,14 @@ class Settings:
     autopilot_enabled: bool
     autopilot_posts_per_day: int
     autopilot_min_pause_minutes: int
+    group_chat_enabled: bool
+    group_chat_id: str
+    group_target_user_id: str
+    group_target_username: str
+    group_target_name: str
+    group_reply_probability: float
+    group_min_pause_seconds: int
+    group_context_messages: int
 
 
 def load_dotenv(path: Path) -> None:
@@ -215,13 +224,22 @@ def get_settings() -> Settings:
                 str(int(os.environ.get("AUTOPILOT_MIN_PAUSE_HOURS", "4")) * 60),
             )
         )
+        group_min_pause_seconds = int(os.environ.get("GROUP_MIN_PAUSE_SECONDS", "90"))
+        group_context_messages = int(os.environ.get("GROUP_CONTEXT_MESSAGES", "16"))
     except ValueError as exc:
         raise ConfigError("ACTIVITY_* и *_MIN_PAUSE_MINUTES должны быть числами.") from exc
+    try:
+        group_reply_probability = float(os.environ.get("GROUP_REPLY_PROBABILITY", "0.12"))
+    except ValueError as exc:
+        raise ConfigError("GROUP_REPLY_PROBABILITY должен быть числом от 0 до 1.") from exc
+    if not (0 <= group_reply_probability <= 1):
+        raise ConfigError("GROUP_REPLY_PROBABILITY должен быть от 0 до 1.")
 
     scan_roots = parse_paths(os.environ.get("ACTIVITY_SCAN_ROOTS", DEFAULT_SCAN_ROOTS))
     exclude_dirs = DEFAULT_EXCLUDE_DIRS | parse_csv_set(os.environ.get("ACTIVITY_EXCLUDE_DIRS", ""))
     spontaneous_enabled = parse_bool(os.environ.get("SPONTANEOUS_ENABLED", "true"))
     autopilot_enabled = parse_bool(os.environ.get("AUTOPILOT_ENABLED", "false"))
+    group_chat_enabled = parse_bool(os.environ.get("GROUP_CHAT_ENABLED", "false"))
     active_mode = normalize_active_mode(os.environ.get("ACTIVE_MODE", "tracking"))
 
     return Settings(
@@ -244,6 +262,14 @@ def get_settings() -> Settings:
         autopilot_enabled=autopilot_enabled,
         autopilot_posts_per_day=autopilot_posts_per_day,
         autopilot_min_pause_minutes=autopilot_min_pause_minutes,
+        group_chat_enabled=group_chat_enabled,
+        group_chat_id=os.environ.get("GROUP_CHAT_ID", ""),
+        group_target_user_id=os.environ.get("GROUP_TARGET_USER_ID", ""),
+        group_target_username=os.environ.get("GROUP_TARGET_USERNAME", ""),
+        group_target_name=os.environ.get("GROUP_TARGET_NAME", ""),
+        group_reply_probability=group_reply_probability,
+        group_min_pause_seconds=group_min_pause_seconds,
+        group_context_messages=group_context_messages,
     )
 
 
@@ -257,7 +283,7 @@ def parse_bool(value: str) -> bool:
 
 def normalize_active_mode(value: str) -> str:
     normalized = value.strip().lower()
-    if normalized in {"autogen", "tracking", "off"}:
+    if normalized in {"autogen", "tracking", "group", "off"}:
         return normalized
     return "tracking"
 
@@ -1668,12 +1694,214 @@ def send_to_telegram(settings: Settings, text: str) -> dict[str, Any]:
     return response
 
 
+def send_group_reply(settings: Settings, text: str, chat_id: str | int, reply_to_message_id: int | None = None) -> dict[str, Any]:
+    validate_post(text, min(settings.post_max_chars, 1200))
+    url = TELEGRAM_SEND_MESSAGE_URL.format(token=urllib.parse.quote(settings.telegram_bot_token))
+    payload: dict[str, Any] = {
+        "chat_id": chat_id,
+        "text": text,
+        "disable_web_page_preview": True,
+        "allow_sending_without_reply": True,
+    }
+    if reply_to_message_id is not None:
+        payload["reply_to_message_id"] = reply_to_message_id
+    response = post_json(url, payload)
+    if not response.get("ok"):
+        raise ApiError(f"Telegram API вернул ошибку: {json.dumps(response, ensure_ascii=False)}")
+    return response
+
+
 def telegram_chat_matches(chat: dict[str, Any], settings: Settings) -> bool:
     chat_id = settings.telegram_chat_id
     if str(chat.get("id")) == chat_id:
         return True
     username = chat.get("username")
     return isinstance(username, str) and chat_id.lower() == f"@{username.lower()}"
+
+
+def telegram_group_chat_matches(chat: dict[str, Any], settings: Settings) -> bool:
+    chat_id = settings.group_chat_id or settings.telegram_chat_id
+    if not chat_id:
+        return False
+    if str(chat.get("id")) == chat_id:
+        return True
+    username = chat.get("username")
+    return isinstance(username, str) and chat_id.lower() == f"@{username.lower()}"
+
+
+def telegram_user_name(user: dict[str, Any]) -> str:
+    username = user.get("username")
+    if isinstance(username, str) and username:
+        return f"@{username}"
+    first = str(user.get("first_name") or "").strip()
+    last = str(user.get("last_name") or "").strip()
+    return " ".join(part for part in (first, last) if part) or str(user.get("id", "unknown"))
+
+
+def telegram_user_matches(user: dict[str, Any], settings: Settings) -> bool:
+    target_id = settings.group_target_user_id.strip()
+    if target_id and str(user.get("id")) == target_id:
+        return True
+    target_username = settings.group_target_username.strip().lstrip("@").lower()
+    username = str(user.get("username") or "").lower()
+    if target_username and username == target_username:
+        return True
+    target_name = settings.group_target_name.strip().lower()
+    full_name = telegram_user_name(user).lstrip("@").lower()
+    return bool(target_name and full_name == target_name)
+
+
+def message_text(message: dict[str, Any]) -> str:
+    text = message.get("text") or message.get("caption")
+    return text.strip() if isinstance(text, str) else ""
+
+
+def default_group_memory() -> dict[str, Any]:
+    return {
+        "target_messages": [],
+        "recent_messages": [],
+        "bot_replies": [],
+        "style_profile": {},
+    }
+
+
+def read_group_memory() -> dict[str, Any]:
+    if not GROUP_MEMORY_PATH.exists():
+        return default_group_memory()
+    try:
+        memory = json.loads(GROUP_MEMORY_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return default_group_memory()
+    return memory if isinstance(memory, dict) else default_group_memory()
+
+
+def write_group_memory(memory: dict[str, Any]) -> None:
+    ensure_dirs()
+    GROUP_MEMORY_PATH.write_text(json.dumps(memory, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def remember_group_message(user: dict[str, Any], text: str, is_target: bool) -> None:
+    memory = read_group_memory()
+    recent = memory.setdefault("recent_messages", [])
+    record = {
+        "created_at": datetime.now().isoformat(timespec="seconds"),
+        "user_id": user.get("id"),
+        "user": telegram_user_name(user),
+        "text": text[:1000],
+    }
+    if isinstance(recent, list):
+        recent.append(record)
+        memory["recent_messages"] = recent[-120:]
+
+    if is_target:
+        target_messages = memory.setdefault("target_messages", [])
+        if isinstance(target_messages, list):
+            target_messages.append(record)
+            memory["target_messages"] = target_messages[-300:]
+            posts = [str(item.get("text", "")) for item in memory["target_messages"] if isinstance(item, dict)]
+            memory["style_profile"] = build_style_profile(posts)
+
+    write_group_memory(memory)
+
+
+def remember_group_reply(text: str) -> None:
+    memory = read_group_memory()
+    replies = memory.setdefault("bot_replies", [])
+    if isinstance(replies, list):
+        replies.append({"created_at": datetime.now().isoformat(timespec="seconds"), "text": text[:1000]})
+        memory["bot_replies"] = replies[-80:]
+    write_group_memory(memory)
+
+
+def group_memory_context(settings: Settings) -> str:
+    memory = read_group_memory()
+    profile = memory.get("style_profile", {})
+    recent = memory.get("recent_messages", [])
+    replies = memory.get("bot_replies", [])
+
+    recent_lines: list[str] = []
+    if isinstance(recent, list):
+        for item in recent[-settings.group_context_messages:]:
+            if not isinstance(item, dict):
+                continue
+            text = str(item.get("text", "")).replace("\n", " ")[:220]
+            recent_lines.append(f"- {item.get('user', 'unknown')}: {text}")
+
+    reply_lines: list[str] = []
+    if isinstance(replies, list):
+        for item in replies[-6:]:
+            if isinstance(item, dict):
+                reply_lines.append(f"- {str(item.get('text', '')).replace(chr(10), ' ')[:220]}")
+
+    return textwrap.dedent(
+        f"""
+        Профиль человека, которого нужно имитировать:
+        {style_profile_context(profile if isinstance(profile, dict) else {})}
+
+        Последний контекст группового чата:
+        {chr(10).join(recent_lines) or "- пока нет"}
+
+        Последние ответы бота, чтобы не повторяться:
+        {chr(10).join(reply_lines) or "- пока нет"}
+        """
+    ).strip()
+
+
+def generate_group_reply(settings: Settings, incoming_text: str, incoming_user: str) -> str:
+    context = group_memory_context(settings)
+    prompt = textwrap.dedent(
+        f"""
+        Язык ответа: {settings.post_language}
+        Максимальная длина: {min(settings.post_max_chars, 1200)} символов.
+
+        {context}
+
+        Новое сообщение в группе от {incoming_user}:
+        {incoming_text}
+
+        Задача: ответь коротко в групповом чате так, будто пишет человек из профиля выше.
+        Копируй стиль: пунктуацию, регистр, сленг, длину фраз, резкость/мягкость, привычные слова.
+        Не копируй старые сообщения дословно и не пересобирай их кусками.
+        Не объясняй, что ты бот или имитируешь человека.
+        Не отвечай слишком полно: это живой чат, не пост в канал.
+        Если уместно, можно ответить одной фразой или шуткой.
+        Верни только текст сообщения.
+        """
+    ).strip()
+    payload = {
+        "model": settings.openai_model,
+        "instructions": "Ты пишешь короткие реплики для группового Telegram-чата в заданной манере.",
+        "input": prompt,
+        "max_output_tokens": 700,
+    }
+    if supports_temperature(settings.openai_model):
+        payload["temperature"] = settings.post_temperature
+    response = post_json(
+        OPENAI_RESPONSES_URL,
+        payload,
+        headers={"Authorization": f"Bearer {settings.openai_api_key}"},
+    )
+    text = extract_response_text(response)
+    validate_post(text, min(settings.post_max_chars, 1200))
+    return text
+
+
+def seconds_since_group_reply() -> float:
+    state = read_state()
+    raw = state.get("group_last_reply_at")
+    if not isinstance(raw, str) or not raw:
+        return 1_000_000.0
+    try:
+        last = datetime.fromisoformat(raw)
+    except ValueError:
+        return 1_000_000.0
+    return max(0.0, (datetime.now() - last).total_seconds())
+
+
+def write_last_group_reply() -> None:
+    state = read_state()
+    state["group_last_reply_at"] = datetime.now().isoformat(timespec="seconds")
+    write_state(state)
 
 
 def sync_channel_memory(settings: Settings) -> int:
@@ -1980,6 +2208,87 @@ def command_sync_channel() -> int:
     return 0
 
 
+def command_group_chat(args: argparse.Namespace) -> int:
+    settings = get_settings()
+    if settings.active_mode != "group" and not args.force:
+        print("Skipped: активен не режим группового чата (ACTIVE_MODE != group).")
+        return 0
+    if not settings.group_chat_enabled and not args.force:
+        print("Skipped: групповой чат выключен (GROUP_CHAT_ENABLED=false).")
+        return 0
+    if not (settings.group_target_user_id or settings.group_target_username or settings.group_target_name):
+        raise ConfigError("Нужно указать GROUP_TARGET_USER_ID, GROUP_TARGET_USERNAME или GROUP_TARGET_NAME.")
+    if not (settings.group_chat_id or settings.telegram_chat_id):
+        raise ConfigError("Нужно указать GROUP_CHAT_ID или TELEGRAM_CHAT_ID.")
+
+    state = read_state()
+    offset = int(state.get("group_update_offset", 0) or 0)
+    url = TELEGRAM_GET_UPDATES_URL.format(token=urllib.parse.quote(settings.telegram_bot_token))
+    response = get_json(
+        url,
+        {
+            "offset": offset,
+            "timeout": 0,
+            "allowed_updates": json.dumps(["message"]),
+        },
+    )
+    if not response.get("ok"):
+        raise ApiError(f"Telegram getUpdates вернул ошибку: {json.dumps(response, ensure_ascii=False)}")
+
+    learned = 0
+    seen = 0
+    replied = 0
+    skipped_by_chance = 0
+    max_update_id = offset - 1
+    for update in response.get("result", []):
+        if not isinstance(update, dict):
+            continue
+        update_id = update.get("update_id")
+        if isinstance(update_id, int):
+            max_update_id = max(max_update_id, update_id)
+        message = update.get("message")
+        if not isinstance(message, dict):
+            continue
+        chat = message.get("chat")
+        if not isinstance(chat, dict) or not telegram_group_chat_matches(chat, settings):
+            continue
+        user = message.get("from")
+        if not isinstance(user, dict) or user.get("is_bot"):
+            continue
+        text = message_text(message)
+        if not text or text.startswith("/"):
+            continue
+
+        seen += 1
+        is_target = telegram_user_matches(user, settings)
+        remember_group_message(user, text, is_target=is_target)
+        if is_target:
+            learned += 1
+            continue
+
+        if seconds_since_group_reply() < settings.group_min_pause_seconds and not args.force:
+            continue
+        if random.random() > settings.group_reply_probability and not args.force:
+            skipped_by_chance += 1
+            continue
+
+        reply = generate_group_reply(settings, incoming_text=text, incoming_user=telegram_user_name(user))
+        send_group_reply(settings, reply, chat.get("id"), message.get("message_id"))
+        remember_group_reply(reply)
+        write_last_group_reply()
+        replied += 1
+        if not args.reply_all:
+            break
+
+    if max_update_id >= offset:
+        state = read_state()
+        state["group_update_offset"] = max_update_id + 1
+        write_state(state)
+
+    print(f"Group chat: seen={seen}, learned={learned}, replied={replied}, skipped_by_chance={skipped_by_chance}")
+    return 0
+
+
 def command_import_history(args: argparse.Namespace) -> int:
     path = Path(args.path).expanduser().resolve()
     imported, skipped = import_channel_history(path)
@@ -2078,6 +2387,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     sync_channel = subparsers.add_parser("sync-channel", help="Import new channel posts from Telegram updates into memory.")
     sync_channel.set_defaults(func=lambda _args: command_sync_channel())
+
+    group_chat = subparsers.add_parser("group-chat", help="Poll a Telegram group and sometimes reply in a target user's style.")
+    group_chat.add_argument("--force", action="store_true", help="Ignore active mode, enabled flag, pause and probability.")
+    group_chat.add_argument("--reply-all", action="store_true", help="Reply to every eligible message in this poll instead of stopping after one.")
+    group_chat.set_defaults(func=command_group_chat)
 
     import_history = subparsers.add_parser("import-history", help="Replace the channel style basis from a Telegram export.")
     import_history.add_argument("path", help="Path to a .txt, .md, .json, .jsonl, .html/.htm file or a folder with exports.")

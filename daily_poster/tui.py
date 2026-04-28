@@ -106,6 +106,11 @@ class TgAutoTui:
                 self.topic_post_menu,
             ),
             (
+                "Групповой чат",
+                "Ответы в группе с имитацией выбранного участника и настраиваемым шансом.",
+                self.group_chat_hub,
+            ),
+            (
                 "Настройки",
                 "Канал, модель, prompt, расписание и технические параметры продукта.",
                 self.settings_hub,
@@ -251,6 +256,41 @@ class TgAutoTui:
             elif key in (ord("5"), ord("q"), 27):
                 return
 
+    def group_chat_hub(self, stdscr: curses.window) -> None:
+        while True:
+            env = read_env()
+            enabled = env.get("ACTIVE_MODE") == "group" and env.get("GROUP_CHAT_ENABLED", "false") == "true"
+            lines = [
+                "Групповой чат",
+                "",
+                "Этот режим читает сообщения группы, учится на выбранном участнике и иногда отвечает в его манере.",
+                "",
+                f"Активен: {'да' if enabled else 'нет'}",
+                f"Группа: {env.get('GROUP_CHAT_ID') or env.get('TELEGRAM_CHAT_ID', 'not set')}",
+                f"Участник-образец: {env.get('GROUP_TARGET_USERNAME') or env.get('GROUP_TARGET_USER_ID') or env.get('GROUP_TARGET_NAME') or 'not set'}",
+                f"Шанс ответа: {env.get('GROUP_REPLY_PROBABILITY', '0.12')}",
+                f"Пауза между ответами: {env.get('GROUP_MIN_PAUSE_SECONDS', '90')} сек",
+                "",
+                "1. Включить режим группы",
+                "2. Настроить группу и участника",
+                "3. Проверить новые сообщения сейчас",
+                "4. Назад",
+            ]
+            self.show_option_screen(stdscr, lines)
+            key = stdscr.getch()
+            if key == ord("1"):
+                env["ACTIVE_MODE"] = "group"
+                env["GROUP_CHAT_ENABLED"] = "true"
+                write_env(env)
+                sync_mode_agents("group")
+                self.message = "Режим группового чата включен."
+            elif key == ord("2"):
+                self.configure_group_chat(stdscr)
+            elif key == ord("3"):
+                self.run_cli_and_show(stdscr, ["group-chat"])
+            elif key in (ord("4"), ord("q"), 27):
+                return
+
     def settings_hub(self, stdscr: curses.window) -> None:
         while True:
             lines = [
@@ -346,6 +386,45 @@ class TgAutoTui:
         write_env(env)
         sync_mode_agents("autogen")
         self.message = "Настройки автогенерации обновлены."
+
+    def configure_group_chat(self, stdscr: curses.window) -> None:
+        env = read_env()
+        env["ACTIVE_MODE"] = "group"
+        env["GROUP_CHAT_ENABLED"] = (
+            self.prompt(stdscr, f"Включить групповой чат true/false [{env.get('GROUP_CHAT_ENABLED', 'true')}]: ")
+            or env.get("GROUP_CHAT_ENABLED", "true")
+        )
+        env["GROUP_CHAT_ID"] = (
+            self.prompt(stdscr, f"ID или @username группы [{env.get('GROUP_CHAT_ID', '')}]: ")
+            or env.get("GROUP_CHAT_ID", "")
+        )
+        env["GROUP_TARGET_USER_ID"] = (
+            self.prompt(stdscr, f"ID участника-образца [{env.get('GROUP_TARGET_USER_ID', '')}]: ")
+            or env.get("GROUP_TARGET_USER_ID", "")
+        )
+        env["GROUP_TARGET_USERNAME"] = (
+            self.prompt(stdscr, f"@username участника-образца [{env.get('GROUP_TARGET_USERNAME', '')}]: ")
+            or env.get("GROUP_TARGET_USERNAME", "")
+        )
+        env["GROUP_TARGET_NAME"] = (
+            self.prompt(stdscr, f"Имя участника, если нет username/id [{env.get('GROUP_TARGET_NAME', '')}]: ")
+            or env.get("GROUP_TARGET_NAME", "")
+        )
+        env["GROUP_REPLY_PROBABILITY"] = (
+            self.prompt(stdscr, f"Шанс ответа 0..1 [{env.get('GROUP_REPLY_PROBABILITY', '0.12')}]: ")
+            or env.get("GROUP_REPLY_PROBABILITY", "0.12")
+        )
+        env["GROUP_MIN_PAUSE_SECONDS"] = (
+            self.prompt(stdscr, f"Минимальная пауза между ответами, сек [{env.get('GROUP_MIN_PAUSE_SECONDS', '90')}]: ")
+            or env.get("GROUP_MIN_PAUSE_SECONDS", "90")
+        )
+        env["GROUP_CONTEXT_MESSAGES"] = (
+            self.prompt(stdscr, f"Сколько последних сообщений учитывать [{env.get('GROUP_CONTEXT_MESSAGES', '16')}]: ")
+            or env.get("GROUP_CONTEXT_MESSAGES", "16")
+        )
+        write_env(env)
+        sync_mode_agents("group")
+        self.message = "Групповой чат обновлен."
 
     def configure_tracking_roots(self, stdscr: curses.window) -> None:
         env = read_env()
@@ -897,6 +976,14 @@ def write_env(values: dict[str, str]) -> None:
         "AUTOPILOT_ENABLED",
         "AUTOPILOT_POSTS_PER_DAY",
         "AUTOPILOT_MIN_PAUSE_MINUTES",
+        "GROUP_CHAT_ENABLED",
+        "GROUP_CHAT_ID",
+        "GROUP_TARGET_USER_ID",
+        "GROUP_TARGET_USERNAME",
+        "GROUP_TARGET_NAME",
+        "GROUP_REPLY_PROBABILITY",
+        "GROUP_MIN_PAUSE_SECONDS",
+        "GROUP_CONTEXT_MESSAGES",
         "ACTIVITY_SCAN_ROOTS",
         "ACTIVITY_EXCLUDE_DIRS",
         "ACTIVITY_MAX_FILES",
@@ -915,6 +1002,14 @@ def write_env(values: dict[str, str]) -> None:
         "AUTOPILOT_ENABLED": "false",
         "AUTOPILOT_POSTS_PER_DAY": "2",
         "AUTOPILOT_MIN_PAUSE_MINUTES": "240",
+        "GROUP_CHAT_ENABLED": "false",
+        "GROUP_CHAT_ID": "",
+        "GROUP_TARGET_USER_ID": "",
+        "GROUP_TARGET_USERNAME": "",
+        "GROUP_TARGET_NAME": "",
+        "GROUP_REPLY_PROBABILITY": "0.12",
+        "GROUP_MIN_PAUSE_SECONDS": "90",
+        "GROUP_CONTEXT_MESSAGES": "16",
         "ACTIVITY_SCAN_ROOTS": core.DEFAULT_SCAN_ROOTS,
         "ACTIVITY_EXCLUDE_DIRS": "node_modules,.git,.venv,venv,__pycache__,Library",
         "ACTIVITY_MAX_FILES": "80",
@@ -940,8 +1035,20 @@ def write_env(values: dict[str, str]) -> None:
     lines.extend(["", "# Channel autopilot"])
     for key in ("AUTOPILOT_ENABLED", "AUTOPILOT_POSTS_PER_DAY", "AUTOPILOT_MIN_PAUSE_MINUTES"):
         lines.append(f"{key}={merged.get(key, '')}")
+    lines.extend(["", "# Group chat mode"])
+    for key in (
+        "GROUP_CHAT_ENABLED",
+        "GROUP_CHAT_ID",
+        "GROUP_TARGET_USER_ID",
+        "GROUP_TARGET_USERNAME",
+        "GROUP_TARGET_NAME",
+        "GROUP_REPLY_PROBABILITY",
+        "GROUP_MIN_PAUSE_SECONDS",
+        "GROUP_CONTEXT_MESSAGES",
+    ):
+        lines.append(f"{key}={merged.get(key, '')}")
     lines.extend(["", "# Daily activity scan"])
-    for key in ordered_keys[12:]:
+    for key in ordered_keys[22:]:
         lines.append(f"{key}={merged.get(key, '')}")
     core.ENV_PATH.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
@@ -1058,7 +1165,7 @@ def sync_mode_agents(mode: str) -> None:
     if mode == "autogen":
         source = core.PROJECT_ROOT / "automation" / "com.codex.maybe-poster.plist"
         install_launch_agent(source, MAYBE_AGENT_PATH)
-    elif mode == "tracking":
+    elif mode in {"tracking", "group", "off"}:
         unload_launch_agent(MAYBE_AGENT_PATH)
 
 
@@ -1067,6 +1174,7 @@ def stop_all_bot_work() -> int:
     env["ACTIVE_MODE"] = "off"
     env["AUTOPILOT_ENABLED"] = "false"
     env["SPONTANEOUS_ENABLED"] = "false"
+    env["GROUP_CHAT_ENABLED"] = "false"
     write_env(env)
 
     for path in (LAUNCH_AGENT_PATH, MAYBE_AGENT_PATH, AUTOPILOT_AGENT_PATH):
@@ -1106,6 +1214,7 @@ def kill_bot_processes() -> int:
         "-m daily_poster preview",
         "-m daily_poster topic-post",
         "-m daily_poster send-file",
+        "-m daily_poster group-chat",
     )
     for line in result.stdout.splitlines():
         parts = line.strip().split(None, 1)
