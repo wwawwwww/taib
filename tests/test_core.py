@@ -486,6 +486,10 @@ class CoreBehaviorTests(unittest.TestCase):
             }
 
             sent_payloads: list[dict[str, object]] = []
+            state.write_text(
+                json.dumps({"group_update_offset": 10, "group_update_baseline_ready": True}),
+                encoding="utf-8",
+            )
 
             def fake_post_json(url: str, payload: dict[str, object], headers: dict[str, str] | None = None) -> dict[str, object]:
                 if "api.openai.com" in url:
@@ -510,6 +514,102 @@ class CoreBehaviorTests(unittest.TestCase):
             self.assertEqual(sent_payloads[0]["reply_to_message_id"], 2)
             self.assertEqual(memory["style_profile"]["posts_analyzed"], 1)
 
+    def test_group_chat_initializes_baseline_without_replying_to_backlog(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            state = root / "state.json"
+            settings = core.Settings(
+                **{
+                    **make_settings(root).__dict__,
+                    "active_mode": "group",
+                    "group_chat_enabled": True,
+                    "group_chat_id": "-1001",
+                    "group_target_user_id": "42",
+                    "group_reply_probability": 1.0,
+                    "group_min_pause_seconds": 0,
+                    "group_live_min_messages": 1,
+                }
+            )
+            updates = {
+                "ok": True,
+                "result": [
+                    {"update_id": 20, "message": {"message_id": 1, "chat": {"id": -1001}, "from": {"id": 42}, "text": "мой стиль"}},
+                    {"update_id": 21, "message": {"message_id": 2, "chat": {"id": -1001}, "from": {"id": 7}, "text": "старое сообщение"}},
+                ],
+            }
+            sent_payloads: list[dict[str, object]] = []
+
+            with (
+                patch.object(core, "STATE_PATH", state),
+                patch.object(core, "GROUP_MEMORY_PATH", root / "group_memory.json"),
+                patch.object(core, "get_settings", return_value=settings),
+                patch.object(core, "get_json", return_value=updates),
+                patch.object(core, "post_json", side_effect=lambda _url, payload, headers=None: sent_payloads.append(payload) or {"ok": True}),
+            ):
+                with redirect_stdout(io.StringIO()):
+                    result = core.command_group_chat(argparse_namespace(force=False, reply_all=False))
+                saved_state = core.read_state()
+
+            self.assertEqual(result, 0)
+            self.assertEqual(sent_payloads, [])
+            self.assertEqual(saved_state["group_update_offset"], 22)
+            self.assertTrue(saved_state["group_update_baseline_ready"])
+
+    def test_group_chat_replies_only_to_latest_accumulated_message(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            state = root / "state.json"
+            group_memory = root / "group_memory.json"
+            state.write_text(
+                json.dumps({"group_update_offset": 10, "group_update_baseline_ready": True}),
+                encoding="utf-8",
+            )
+            memory = core.default_group_memory()
+            memory["target_messages"] = [{"text": "ну да"}]
+            group_memory.write_text(json.dumps(memory, ensure_ascii=False), encoding="utf-8")
+            settings = core.Settings(
+                **{
+                    **make_settings(root).__dict__,
+                    "active_mode": "group",
+                    "group_chat_enabled": True,
+                    "group_chat_id": "-1001",
+                    "group_target_user_id": "42",
+                    "group_reply_probability": 1.0,
+                    "group_min_pause_seconds": 0,
+                    "group_live_min_messages": 1,
+                }
+            )
+            updates = {
+                "ok": True,
+                "result": [
+                    {"update_id": 10, "message": {"message_id": 1, "chat": {"id": -1001}, "from": {"id": 7}, "text": "первое"}},
+                    {"update_id": 11, "message": {"message_id": 2, "chat": {"id": -1001}, "from": {"id": 8}, "text": "второе"}},
+                ],
+            }
+            sent_payloads: list[dict[str, object]] = []
+
+            def fake_post_json(url: str, payload: dict[str, object], headers: dict[str, str] | None = None) -> dict[str, object]:
+                if "api.openai.com" in url:
+                    return {"output_text": "отвечаю на последнее"}
+                sent_payloads.append(payload)
+                return {"ok": True, "result": {"message_id": 99}}
+
+            with (
+                patch.object(core, "STATE_PATH", state),
+                patch.object(core, "GROUP_MEMORY_PATH", group_memory),
+                patch.object(core, "get_settings", return_value=settings),
+                patch.object(core, "get_json", return_value=updates),
+                patch.object(core, "post_json", side_effect=fake_post_json),
+            ):
+                with redirect_stdout(io.StringIO()):
+                    result = core.command_group_chat(argparse_namespace(force=False, reply_all=False))
+                saved_state = core.read_state()
+
+            self.assertEqual(result, 0)
+            self.assertEqual(len(sent_payloads), 1)
+            self.assertEqual(sent_payloads[0]["reply_to_message_id"], 2)
+            self.assertEqual(saved_state["group_update_offset"], 12)
+
     def test_group_chat_live_waits_for_minimum_target_messages(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -533,9 +633,14 @@ class CoreBehaviorTests(unittest.TestCase):
                 ],
             }
             sent_payloads: list[dict[str, object]] = []
+            state = root / "state.json"
+            state.write_text(
+                json.dumps({"group_update_offset": 10, "group_update_baseline_ready": True}),
+                encoding="utf-8",
+            )
 
             with (
-                patch.object(core, "STATE_PATH", root / "state.json"),
+                patch.object(core, "STATE_PATH", state),
                 patch.object(core, "GROUP_MEMORY_PATH", root / "group_memory.json"),
                 patch.object(core, "get_settings", return_value=settings),
                 patch.object(core, "get_json", return_value=updates),
@@ -576,6 +681,11 @@ class CoreBehaviorTests(unittest.TestCase):
                 ],
             }
             sent_payloads: list[dict[str, object]] = []
+            state = root / "state.json"
+            state.write_text(
+                json.dumps({"group_update_offset": 11, "group_update_baseline_ready": True}),
+                encoding="utf-8",
+            )
 
             def fake_post_json(url: str, payload: dict[str, object], headers: dict[str, str] | None = None) -> dict[str, object]:
                 if "api.openai.com" in url:
@@ -584,7 +694,7 @@ class CoreBehaviorTests(unittest.TestCase):
                 return {"ok": True, "result": {"message_id": 99}}
 
             with (
-                patch.object(core, "STATE_PATH", root / "state.json"),
+                patch.object(core, "STATE_PATH", state),
                 patch.object(core, "GROUP_MEMORY_PATH", group_memory),
                 patch.object(core, "get_settings", return_value=settings),
                 patch.object(core, "get_json", return_value=updates),

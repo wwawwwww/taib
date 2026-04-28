@@ -2573,6 +2573,7 @@ def command_group_chat(args: argparse.Namespace) -> int:
         raise ConfigError("Нужно указать GROUP_CHAT_ID или TELEGRAM_CHAT_ID.")
 
     state = read_state()
+    baseline_ready = bool(state.get("group_update_baseline_ready"))
     offset = int(state.get("group_update_offset", 0) or 0)
     url = TELEGRAM_GET_UPDATES_URL.format(token=urllib.parse.quote(settings.telegram_bot_token))
     response = get_json(
@@ -2591,6 +2592,7 @@ def command_group_chat(args: argparse.Namespace) -> int:
     replied = 0
     skipped_by_chance = 0
     max_update_id = offset - 1
+    reply_candidates: list[dict[str, Any]] = []
     for update in response.get("result", []):
         if not isinstance(update, dict):
             continue
@@ -2619,24 +2621,51 @@ def command_group_chat(args: argparse.Namespace) -> int:
         if settings.group_mode == "live" and group_target_message_count() < settings.group_live_min_messages and not args.force:
             continue
 
-        if seconds_since_group_reply() < settings.group_min_pause_seconds and not args.force:
-            continue
-        if random.random() > settings.group_reply_probability and not args.force:
-            skipped_by_chance += 1
-            continue
-
-        reply = generate_group_reply(settings, incoming_text=text, incoming_user=telegram_user_name(user))
-        send_group_reply(settings, reply, chat.get("id"), message.get("message_id"))
-        remember_group_reply(reply)
-        write_last_group_reply()
-        replied += 1
-        if not args.reply_all:
-            break
+        reply_candidates.append(
+            {
+                "chat_id": chat.get("id"),
+                "message_id": message.get("message_id"),
+                "text": text,
+                "user_name": telegram_user_name(user),
+            }
+        )
 
     if max_update_id >= offset:
         state = read_state()
         state["group_update_offset"] = max_update_id + 1
+        state["group_update_baseline_ready"] = True
         write_state(state)
+    elif not baseline_ready:
+        state = read_state()
+        state["group_update_baseline_ready"] = True
+        write_state(state)
+
+    if not baseline_ready and not args.force:
+        print(
+            f"Group chat initialized: skipped existing updates up to {max_update_id}. "
+            "Буду отвечать только на новые сообщения."
+        )
+        return 0
+
+    if seconds_since_group_reply() < settings.group_min_pause_seconds and not args.force:
+        reply_candidates = []
+
+    if not args.reply_all and reply_candidates:
+        reply_candidates = [reply_candidates[-1]]
+
+    for candidate in reply_candidates:
+        if random.random() > settings.group_reply_probability and not args.force:
+            skipped_by_chance += 1
+            continue
+        reply = generate_group_reply(
+            settings,
+            incoming_text=str(candidate["text"]),
+            incoming_user=str(candidate["user_name"]),
+        )
+        send_group_reply(settings, reply, candidate["chat_id"], candidate["message_id"])
+        remember_group_reply(reply)
+        write_last_group_reply()
+        replied += 1
 
     print(
         f"Group chat: mode={settings.group_mode}, seen={seen}, learned={learned}, "
