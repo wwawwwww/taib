@@ -6,6 +6,7 @@ __pycache__/
 data/drafts/*.md
 data/debug/
 data/memory.json
+data/group_memory.json
 data/posts.jsonl
 data/state.json
 data/snapshots/

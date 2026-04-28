@@ -789,6 +789,7 @@ class TelegramGroupHtmlExportParser(HTMLParser):
         self._capture_depth = 0
         self._author_chunks: list[str] = []
         self._text_chunks: list[str] = []
+        self._last_author = ""
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         classes = {
@@ -813,6 +814,8 @@ class TelegramGroupHtmlExportParser(HTMLParser):
             elif "text" in classes:
                 self._capture = "text"
                 self._capture_depth = 1
+            elif self._capture:
+                self._capture_depth += 1
         elif self._capture == "text" and tag == "br":
             self._text_chunks.append("\n")
 
@@ -825,17 +828,33 @@ class TelegramGroupHtmlExportParser(HTMLParser):
                 self._capture = None
         self._message_depth -= 1
         if self._message_depth == 0:
-            author = html.unescape("".join(self._author_chunks)).strip()
+            raw_author = html.unescape("".join(self._author_chunks)).strip()
+            author = clean_group_author_name(raw_author)
+            if author:
+                self._last_author = author
+            elif not raw_author and self._last_author:
+                author = self._last_author
             text = html.unescape("".join(self._text_chunks)).strip()
             text = re.sub(r"\n{3,}", "\n\n", text)
-            if text:
+            if text and author:
                 self.messages.append({"author_id": "", "author_name": author or "unknown", "text": text})
 
     def handle_data(self, data: str) -> None:
-        if self._capture == "author":
+        if self._capture == "author" and self._capture_depth == 1:
             self._author_chunks.append(data)
         elif self._capture == "text":
             self._text_chunks.append(data)
+
+
+def clean_group_author_name(name: str) -> str:
+    name = html.unescape(name)
+    name = re.sub(r"\s+", " ", name).strip()
+    name = re.sub(r"\b\d{1,2}\.\d{1,2}\.\d{4}\b.*$", "", name).strip()
+    name = re.sub(r"\b\d{1,2}:\d{2}(?::\d{2})?\b.*$", "", name).strip()
+    lowered = name.lower()
+    if not name or lowered in {"unknown", "deleted account"}:
+        return ""
+    return name
 
 
 def extract_group_messages_from_html(text: str) -> list[dict[str, Any]]:
@@ -1913,25 +1932,29 @@ def participant_key(message: dict[str, Any]) -> str:
     author_id = str(message.get("author_id") or "").strip()
     if author_id:
         return author_id
-    return str(message.get("author_name") or "unknown").strip().lower()
+    author_name = clean_group_author_name(str(message.get("author_name") or ""))
+    return re.sub(r"\s+", " ", author_name).strip().lower()
 
 
 def group_archive_participants(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     by_key: dict[str, dict[str, Any]] = {}
     for message in messages:
         key = participant_key(message)
+        author_name = clean_group_author_name(str(message.get("author_name") or ""))
+        if not key or not author_name:
+            continue
         item = by_key.setdefault(
             key,
             {
                 "key": key,
                 "author_id": str(message.get("author_id") or "").strip(),
-                "author_name": str(message.get("author_name") or "unknown").strip(),
+                "author_name": author_name,
                 "count": 0,
             },
         )
         item["count"] = int(item.get("count", 0)) + 1
         if not item.get("author_name") or item.get("author_name") == "unknown":
-            item["author_name"] = str(message.get("author_name") or "unknown").strip()
+            item["author_name"] = author_name
     return sorted(by_key.values(), key=lambda item: (-int(item.get("count", 0)), str(item.get("author_name", ""))))
 
 
@@ -1947,11 +1970,11 @@ def import_group_archive(path: Path, replace: bool = True) -> tuple[int, list[di
     cleaned = [
         {
             "author_id": str(item.get("author_id") or "").strip(),
-            "author_name": str(item.get("author_name") or "unknown").strip(),
+            "author_name": clean_group_author_name(str(item.get("author_name") or "")),
             "text": str(item.get("text") or "").strip()[:1000],
         }
         for item in imported_messages
-        if str(item.get("text") or "").strip()
+        if str(item.get("text") or "").strip() and clean_group_author_name(str(item.get("author_name") or ""))
     ]
     participants = group_archive_participants(cleaned)
 

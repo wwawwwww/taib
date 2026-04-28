@@ -443,25 +443,12 @@ class TgAutoTui:
             self.message = "В архиве не найдено текстовых сообщений с участниками."
             return
 
-        lines = [
-            f"Загружено сообщений: {imported}",
-            "",
-            "Выбери участника-образец по номеру:",
-            "",
-        ]
-        for idx, participant in enumerate(participants[:30], start=1):
-            name = participant.get("author_name", "unknown")
-            author_id = participant.get("author_id") or participant.get("key") or ""
-            count = participant.get("count", 0)
-            lines.append(f"{idx}. {name} | {author_id} | {count} сообщений")
-        self.show_text(stdscr, lines)
-
-        selector = self.prompt(stdscr, "Номер/id/точное имя участника: ")
-        if not selector.strip():
+        selected = self.choose_group_participant(stdscr, participants, imported)
+        if selected is None:
             self.message = "Участник не выбран."
             return
         try:
-            selected = core.select_group_archive_participant(selector.strip())
+            selected = core.select_group_archive_participant(str(selected.get("key") or selected.get("author_id") or selected.get("author_name")))
         except Exception as exc:  # noqa: BLE001
             self.message = f"Не удалось выбрать участника: {exc}"
             return
@@ -474,6 +461,50 @@ class TgAutoTui:
         env["GROUP_TARGET_NAME"] = str(selected.get("author_name", ""))
         write_env(env)
         self.message = f"Выбран стиль участника: {selected.get('author_name', 'unknown')}."
+
+    def choose_group_participant(
+        self,
+        stdscr: curses.window,
+        participants: list[dict[str, object]],
+        imported: int,
+    ) -> dict[str, object] | None:
+        selected = 0
+        offset = 0
+        while True:
+            stdscr.erase()
+            h, w = stdscr.getmaxyx()
+            stdscr.addstr(1, 2, f"Загружено сообщений: {imported}"[: w - 4], curses.color_pair(1) | curses.A_BOLD)
+            stdscr.addstr(2, 2, "Выбери участника стрелками, Enter — выбрать, q — назад."[: w - 4])
+            view_height = max(1, h - 6)
+            if selected < offset:
+                offset = selected
+            elif selected >= offset + view_height:
+                offset = selected - view_height + 1
+
+            for row, participant in enumerate(participants[offset: offset + view_height], start=0):
+                idx = offset + row
+                attr = curses.A_REVERSE if idx == selected else curses.A_NORMAL
+                name = str(participant.get("author_name", "unknown"))
+                author_id = str(participant.get("author_id") or participant.get("key") or "")
+                count = participant.get("count", 0)
+                line = f"{idx + 1}. {name} | {author_id} | {count} сообщений"
+                stdscr.addstr(4 + row, 2, line[: w - 4], attr)
+
+            self.draw_footer(stdscr)
+            stdscr.refresh()
+            key = stdscr.getch()
+            if key in (ord("q"), 27):
+                return None
+            if key in (curses.KEY_UP, ord("k")):
+                selected = (selected - 1) % len(participants)
+            elif key in (curses.KEY_DOWN, ord("j")):
+                selected = (selected + 1) % len(participants)
+            elif key == curses.KEY_NPAGE:
+                selected = min(len(participants) - 1, selected + view_height)
+            elif key == curses.KEY_PPAGE:
+                selected = max(0, selected - view_height)
+            elif key in (10, 13, curses.KEY_ENTER):
+                return participants[selected]
 
     def configure_tracking_roots(self, stdscr: curses.window) -> None:
         env = read_env()

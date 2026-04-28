@@ -406,6 +406,41 @@ class CoreBehaviorTests(unittest.TestCase):
             self.assertEqual(imported, 2)
             self.assertEqual({item["author_name"] for item in participants}, {"Артём", "Наиль"})
 
+    def test_import_group_archive_html_uses_last_author_and_ignores_date_noise(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            group_memory = root / "group_memory.json"
+            export = root / "messages.html"
+            export.write_text(
+                """
+                <html><body>
+                  <div class="message default clearfix">
+                    <div class="from_name">
+                      Alex Ere
+                      <div class="date details" title="03.12.2025 10:44:42">10:44</div>
+                    </div>
+                    <div class="text">первое сообщение</div>
+                  </div>
+                  <div class="message default clearfix joined">
+                    <div class="text">второе сообщение</div>
+                  </div>
+                  <div class="message default clearfix">
+                    <div class="from_name">unknown</div>
+                    <div class="text">это надо пропустить</div>
+                  </div>
+                </body></html>
+                """.strip(),
+                encoding="utf-8",
+            )
+
+            with patch.object(core, "GROUP_MEMORY_PATH", group_memory):
+                imported, participants = core.import_group_archive(export)
+
+            self.assertEqual(imported, 2)
+            self.assertEqual(len(participants), 1)
+            self.assertEqual(participants[0]["author_name"], "Alex Ere")
+            self.assertEqual(participants[0]["count"], 2)
+
     def test_group_chat_polls_learns_and_replies_by_probability(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
